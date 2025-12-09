@@ -8,6 +8,10 @@ from SwissKnife.utils import load_config
 from sklearn.utils import class_weight
 from datetime import datetime
 import numpy as np
+import wandb
+from wandb.integration.keras import WandbMetricsLogger, WandbModelCheckpoint
+import matplotlib.pyplot as plt
+import seaborn as sns 
 
 # Configuration
 CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/distilled_clips/'
@@ -47,10 +51,22 @@ print(f"  Test: {x_test.shape}, labels: {len(y_test)}")
 
 # Check label distribution
 from collections import Counter
-print(f"\nTrain label distribution: {Counter(y_train)}")
+train_dist = Counter(y_train)
+print(f"\nTrain label distribution: {train_dist}")
 if y_val is not None:
-    print(f"Val label distribution: {Counter(y_val)}")
-print(f"Test label distribution: {Counter(y_test)}")
+    val_dist = Counter(y_val)
+    print(f"Val label distribution: {val_dist}")
+test_dist = Counter(y_test)
+print(f"Test label distribution: {test_dist}")
+
+# Log data statistics to wandb
+wandb.config.update({
+    "train_samples": len(y_train),
+    "val_samples": len(y_val) if y_val is not None else 0,
+    "test_samples": len(y_test),
+    "train_distribution": dict(train_dist),
+    "test_distribution": dict(test_dist),
+})
 
 # Load SIPEC config
 config = load_config(f"configs/behavior/{CONFIG_NAME}")
@@ -80,7 +96,7 @@ config['backbone'] = 'xception'
 # Recognition model parameters
 config['recognition_model_optimizer'] = 'adam'
 config['recognition_model_lr'] = 0.0001
-config['recognition_model_epochs'] = 10
+config['recognition_model_epochs'] = 2
 config['recognition_model_batch_size'] = 16
 config['recognition_model_fix'] = False
 config['recognition_model_remove_classification'] = False
@@ -97,6 +113,27 @@ config['sequential_model_lr'] = 0.0001
 config['sequential_model_use_scheduler'] = False
 config['sequential_model_epochs'] = 50
 config['sequential_model_batch_size'] = 16
+
+wandb.init(
+    project="SIPIG-initial",
+    name=f"train_{datetime.now().strftime('%m%d_%H%M')}",
+    config={
+        "architecture": config['backbone'],
+        "dataset": "distilled_clips",
+        "epochs": config['recognition_model_epochs'],
+        "batch_size": config['recognition_model_batch_size'],
+        "learning_rate": config['recognition_model_lr'],
+        "optimizer": config['recognition_model_optimizer'],
+        "image_size": (75, 75),  # Your downscale size
+        "num_classes": config['num_classes'],
+        "use_class_weights": config['use_class_weights'],
+        "use_scheduler": config['recognition_model_use_scheduler'],
+        "scheduler_lr": config['recognition_model_scheduler_lr'],
+        "scheduler_factor": config['recognition_model_scheduler_factor'],
+        "normalize_data": config['normalize_data'],
+        "use_generator": config['use_generator'],
+    }
+)
 
 print("\nConfig being used:")
 for key in ['train_recognition_model', 'use_class_weights', 'recognition_model_use_scheduler']:
@@ -116,17 +153,16 @@ else:
 # Prepare data
 print("Preparing data...")
 dataloader.prepare_data(
-    downscale=(75, 75),  # Don't downscale - already at target size
-    remove_behaviors=[],  # Don't remove any behaviors
+    downscale=(75, 75),
+    remove_behaviors=[],
     flatten=False,
-    recurrent=False  # Not using sequential model
+    recurrent=False
 )
 
 # CRITICAL: Calculate class weights BEFORE training
 class_weights = None
 if config['use_class_weights']:
     print("\nCalculating class weights...")
-    # Need to encode labels first to get numeric values
     from sklearn import preprocessing
     label_encoder = preprocessing.LabelEncoder()
     y_train_encoded = label_encoder.fit_transform(y_train)
@@ -138,6 +174,13 @@ if config['use_class_weights']:
     )
     print(f"Class weights: {class_weights}")
     print(f"Classes: {label_encoder.classes_}")
+    
+    # Log class weights to wandb
+    wandb.config.update({
+        "class_weights": {label_encoder.classes_[i]: float(class_weights[i]) 
+                         for i in range(len(class_weights))},
+        "classes": list(label_encoder.classes_)
+    })
 
 # Train model
 print("\n" + "="*80)
@@ -148,8 +191,8 @@ model, results, report = train_behavior(
     dataloader,
     config,
     num_classes=config['num_classes'],
-    encode_labels=False,  # Already encoded in prepare_data
-    class_weights=class_weights  # CRITICAL: Pass class weights!
+    encode_labels=False,
+    class_weights=class_weights
 )
 
 print("\n" + "="*80)
@@ -160,6 +203,16 @@ print("Classification Report:")
 print(report)
 print(f"\nMetrics (acc, f1, corr): {results}")
 
+# Log validation results to wandb
+wandb.log({
+    "val_balanced_accuracy": results[0],
+    "val_macro_f1": results[1],
+    "val_pearson_corr": results[2],
+})
+
+# Log classification report as text
+wandb.log({"val_classification_report": wandb.Html(f"<pre>{report}</pre>")})
+
 # If we have a separate test set, evaluate on it
 if x_val is not None and x_test is not None:
     print("\n" + "="*80)
@@ -169,7 +222,7 @@ if x_val is not None and x_test is not None:
     # Create a separate dataloader for test evaluation
     test_dataloader = Dataloader(x_train, y_train, x_test, y_test, config=config)
     test_dataloader.prepare_data(
-        downscale=None,
+        downscale=(75, 75),
         remove_behaviors=[],
         flatten=False,
         recurrent=False
@@ -203,12 +256,57 @@ if x_val is not None and x_test is not None:
     print(f"  Balanced Accuracy: {test_acc:.4f}")
     print(f"  Macro F1: {test_f1:.4f}")
     print(f"  Pearson Correlation: {test_corr:.4f}")
+    
+    # Log test results to wandb
+    wandb.log({
+        "test_balanced_accuracy": test_acc,
+        "test_macro_f1": test_f1,
+        "test_pearson_corr": test_corr,
+    })
+    
+    # Log test classification report
+    wandb.log({"test_classification_report": wandb.Html(f"<pre>{test_report}</pre>")})
+    
+    # Create confusion matrix
+    from sklearn.metrics import confusion_matrix
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+    
+    cm = confusion_matrix(test_true_labels, test_pred_labels)
+    
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+                xticklabels=['lying_asleep', 'lying_awake', 'upright', 'obstructed'],
+                yticklabels=['lying_asleep', 'lying_awake', 'upright', 'obstructed'],
+                ax=ax)
+    ax.set_xlabel('Predicted')
+    ax.set_ylabel('True')
+    ax.set_title('Test Set Confusion Matrix')
+    
+    wandb.log({"test_confusion_matrix": wandb.Image(fig)})
+    plt.close(fig)
 
 # Save model
 now = datetime.now().strftime("%m-%d-%Y_%HH-%MM-%SS")
 name = f'pig_behavior_model_{now}.h5'
 model.recognition_model.save(name)
 print(f"\nModel saved to: {name}")
+
+# Save model as wandb artifact
+artifact = wandb.Artifact(
+    name=f'pig-behavior-model-{now}',
+    type='model',
+    description='Pig behavior classification model (xception)',
+    metadata={
+        'architecture': 'xception',
+        'num_classes': 4,
+        'input_size': (75, 75, 3),
+        'val_accuracy': results[0],
+        'val_f1': results[1],
+    }
+)
+artifact.add_file(name)
+wandb.log_artifact(artifact)
 
 # Save training history if available
 if hasattr(model, 'recognition_model_history') and model.recognition_model_history:
@@ -217,3 +315,47 @@ if hasattr(model, 'recognition_model_history') and model.recognition_model_histo
     with open(history_name, 'wb') as f:
         pickle.dump(model.recognition_model_history.history, f)
     print(f"Training history saved to: {history_name}")
+    
+    # Log training curves
+    history = model.recognition_model_history.history
+    
+    # Create training plots
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    
+    # Loss
+    axes[0, 0].plot(history['loss'], label='Train Loss')
+    axes[0, 0].plot(history['val_loss'], label='Val Loss')
+    axes[0, 0].set_xlabel('Epoch')
+    axes[0, 0].set_ylabel('Loss')
+    axes[0, 0].set_title('Training and Validation Loss')
+    axes[0, 0].legend()
+    axes[0, 0].grid(True)
+    
+    # Categorical Accuracy
+    axes[0, 1].plot(history['categorical_accuracy'], label='Train Accuracy')
+    axes[0, 1].plot(history['val_categorical_accuracy'], label='Val Accuracy')
+    axes[0, 1].set_xlabel('Epoch')
+    axes[0, 1].set_ylabel('Accuracy')
+    axes[0, 1].set_title('Training and Validation Accuracy')
+    axes[0, 1].legend()
+    axes[0, 1].grid(True)
+    
+    # Learning Rate (if available)
+    if 'lr' in history:
+        axes[1, 0].plot(history['lr'])
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].set_ylabel('Learning Rate')
+        axes[1, 0].set_title('Learning Rate Schedule')
+        axes[1, 0].set_yscale('log')
+        axes[1, 0].grid(True)
+    
+    # Hide empty subplot
+    axes[1, 1].axis('off')
+    
+    plt.tight_layout()
+    wandb.log({"training_curves": wandb.Image(fig)})
+    plt.close(fig)
+
+# Finish wandb run
+wandb.finish()
+print("\nWandB run completed!")
