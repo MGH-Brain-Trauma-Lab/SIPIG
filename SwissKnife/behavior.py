@@ -70,6 +70,15 @@ def train_behavior(
     my_metrics.setModel(our_model.recognition_model)
     our_model.add_callbacks([my_metrics])
 
+    try:
+        from wandb.integration.keras import WandbMetricsLogger
+        wandb_callback = WandbMetricsLogger(
+            log_freq='epoch'
+        )
+        our_model.add_callbacks([wandb_callback])
+    except ImportError:
+        print("WandB not available, skipping callback")
+
     if config["train_recognition_model"]:
         if dataloader.config["use_generator"]:
             dataloader.training_generator = DataGenerator(
