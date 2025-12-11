@@ -12,9 +12,10 @@ import wandb
 from wandb.integration.keras import WandbMetricsLogger, WandbModelCheckpoint
 import matplotlib.pyplot as plt
 import seaborn as sns 
+from sklearn import metrics
 
 # Configuration
-CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/distilled_clips/'
+CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/distilled_clips_gpu_test/'
 CONFIG_NAME = 'default'
 
 # Load data
@@ -59,15 +60,6 @@ if y_val is not None:
 test_dist = Counter(y_test)
 print(f"Test label distribution: {test_dist}")
 
-# Log data statistics to wandb
-wandb.config.update({
-    "train_samples": len(y_train),
-    "val_samples": len(y_val) if y_val is not None else 0,
-    "test_samples": len(y_test),
-    "train_distribution": dict(train_dist),
-    "test_distribution": dict(test_dist),
-})
-
 # Load SIPEC config
 config = load_config(f"configs/behavior/{CONFIG_NAME}")
 
@@ -96,7 +88,7 @@ config['backbone'] = 'xception'
 # Recognition model parameters
 config['recognition_model_optimizer'] = 'adam'
 config['recognition_model_lr'] = 0.0001
-config['recognition_model_epochs'] = 2
+config['recognition_model_epochs'] = 15
 config['recognition_model_batch_size'] = 16
 config['recognition_model_fix'] = False
 config['recognition_model_remove_classification'] = False
@@ -114,17 +106,23 @@ config['sequential_model_use_scheduler'] = False
 config['sequential_model_epochs'] = 50
 config['sequential_model_batch_size'] = 16
 
+val_dist = None
+if y_val is not None:
+    val_dist = Counter(y_val)
+    print(f"Val label distribution: {val_dist}")
+
 wandb.init(
     project="SIPIG-initial",
     name=f"train_{datetime.now().strftime('%m%d_%H%M')}",
     config={
+        # Model config
         "architecture": config['backbone'],
         "dataset": "distilled_clips",
         "epochs": config['recognition_model_epochs'],
         "batch_size": config['recognition_model_batch_size'],
         "learning_rate": config['recognition_model_lr'],
         "optimizer": config['recognition_model_optimizer'],
-        "image_size": (75, 75),  # Your downscale size
+        "image_size": (75, 75),
         "num_classes": config['num_classes'],
         "use_class_weights": config['use_class_weights'],
         "use_scheduler": config['recognition_model_use_scheduler'],
@@ -132,12 +130,46 @@ wandb.init(
         "scheduler_factor": config['recognition_model_scheduler_factor'],
         "normalize_data": config['normalize_data'],
         "use_generator": config['use_generator'],
+        # Data statistics
+        "train_samples": len(y_train),
+        "val_samples": len(y_val) if y_val is not None else 0,
+        "test_samples": len(y_test),
+        "train_distribution": dict(train_dist),
+        "val_distribution": dict(val_dist) if val_dist is not None else None,
+        "test_distribution": dict(test_dist),
     }
 )
+
+# Log distribution bar charts
+import pandas as pd
+fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+for idx, (name, dist) in enumerate([('Train', train_dist), ('Val', val_dist if val_dist else {}), ('Test', test_dist)]):
+    if dist:
+        axes[idx].bar(dist.keys(), dist.values())
+        axes[idx].set_title(f'{name} Distribution')
+        axes[idx].set_xlabel('Class')
+        axes[idx].set_ylabel('Count')
+        axes[idx].tick_params(axis='x', rotation=45)
+plt.tight_layout()
+wandb.log({"data_distributions": wandb.Image(fig)})
+plt.close(fig)
 
 print("\nConfig being used:")
 for key in ['train_recognition_model', 'use_class_weights', 'recognition_model_use_scheduler']:
     print(f"  {key}: {config[key]} (type: {type(config[key])})")
+
+# =================oversampling========================
+from imblearn.over_sampling import RandomOverSampler
+
+print("\nOversampling minority classes...")
+ros = RandomOverSampler(random_state=42)
+x_train_flat = x_train.reshape(len(x_train), -1)
+x_train_resampled, y_train_resampled = ros.fit_resample(x_train_flat, y_train)
+x_train = x_train_resampled.reshape(-1, *x_train.shape[1:])
+y_train = y_train_resampled
+
+print(f"After oversampling: {Counter(y_train)}")
+# =========================================
 
 # Create SIPEC dataloader with appropriate validation data
 print("\nCreating dataloader...")
@@ -159,6 +191,7 @@ dataloader.prepare_data(
     recurrent=False
 )
 
+# ================= class weights =================
 # CRITICAL: Calculate class weights BEFORE training
 class_weights = None
 if config['use_class_weights']:
@@ -172,16 +205,42 @@ if config['use_class_weights']:
         classes=np.unique(y_train_encoded),
         y=y_train_encoded
     )
+    
     print(f"Class weights: {class_weights}")
     print(f"Classes: {label_encoder.classes_}")
     
+#     MANUAL WEIGHTS - Set these to whatever you want
+#     manual_weights = {
+#         'lying asleep': 0.0,
+#         'lying awake': 1000.0,
+#         'obstructed': 0.0,
+#         'upright': 0.0,
+#     }
+    
+#     # Convert to array in the order that label_encoder expects
+#     class_weights = np.array([manual_weights[cls] for cls in label_encoder.classes_])
+    
+#     print(f"Manual class weights: {class_weights}")
+#     print(f"Classes: {label_encoder.classes_}")
+    
+    print(f"Weight distribution:")
+    for i, cls in enumerate(label_encoder.classes_):
+        print(f"  {cls}: {class_weights[i]:.4f}")
+
     # Log class weights to wandb
     wandb.config.update({
         "class_weights": {label_encoder.classes_[i]: float(class_weights[i]) 
                          for i in range(len(class_weights))},
         "classes": list(label_encoder.classes_)
     })
+    
+    if class_weights is not None:
+        class_weights_dict = {i: class_weights[i] for i in range(len(class_weights))}
+        print(f"\nClass weights as dict: {class_weights_dict}")
+        class_weights = class_weights_dict  # Pass dict instead of array
 
+# ============================================
+        
 # Train model
 print("\n" + "="*80)
 print("TRAINING MODEL")
@@ -203,6 +262,8 @@ print("Classification Report:")
 print(report)
 print(f"\nMetrics (acc, f1, corr): {results}")
 
+# =================== wandb logging =======================
+
 # Log validation results to wandb
 wandb.log({
     "val_balanced_accuracy": results[0],
@@ -213,6 +274,31 @@ wandb.log({
 # Log classification report as text
 wandb.log({"val_classification_report": wandb.Html(f"<pre>{report}</pre>")})
 
+# Log validation results to wandb
+wandb.log({
+    "val_balanced_accuracy": results[0],
+    "val_macro_f1": results[1],
+    "val_pearson_corr": results[2],
+})
+
+# Parse classification report for per-class metrics
+report_dict = metrics.classification_report(
+    np.argmax(dataloader.y_test, axis=-1),
+    res,
+    target_names=label_encoder.classes_,
+    output_dict=True
+)
+
+# Log per-class metrics with class names
+for class_name in label_encoder.classes_:
+    wandb.log({
+        f"val_{class_name}_precision": report_dict[class_name]['precision'],
+        f"val_{class_name}_recall": report_dict[class_name]['recall'],
+        f"val_{class_name}_f1": report_dict[class_name]['f1-score'],
+    })
+
+# =================== wandb logging =======================
+    
 # If we have a separate test set, evaluate on it
 if x_val is not None and x_test is not None:
     print("\n" + "="*80)
@@ -238,6 +324,10 @@ if x_val is not None and x_test is not None:
     test_predictions = model.recognition_model.predict(test_dataloader.x_test)
     test_pred_labels = np.argmax(test_predictions, axis=-1)
     test_true_labels = np.argmax(test_dataloader.y_test, axis=-1)
+
+    test_pred_labels = np.argmax(test_predictions, axis=-1)
+    test_pred_behaviors = label_encoder.inverse_transform(test_pred_labels)
+    print(f"\nPrediction distribution: {Counter(test_pred_behaviors)}")
     
     # Calculate metrics
     test_acc = metrics.balanced_accuracy_score(test_true_labels, test_pred_labels)
