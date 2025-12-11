@@ -136,7 +136,7 @@ def load_clips_from_directory(clips_dir, annotations_json, framerate=1, greyscal
         print(f"  Loading {clip_filename}...", end=' ')
         video = loadVideo(video_path, greyscale=greyscale, num_frames=None)
         
-        min_frames = 5 * 60 * framerate   # 5 minutes
+        min_frames = 30 * framerate   # 30s
         if len(video) < min_frames:
             print(f"SKIPPED (too short: {len(video)} frames, required: {min_frames})")
             continue
