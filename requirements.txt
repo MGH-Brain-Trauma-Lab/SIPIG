@@ -19,3 +19,5 @@ scikit-image
 scipy
 scikit-video
 tensorflow-gpu==2.4.1
+wandb
+seaborn
