@@ -51,6 +51,7 @@ def train_behavior(
     )
 
     our_model.set_class_weight(class_weights)
+    print(f"M_ DEBUG: Class weights set in model: {our_model.class_weight}")
 
     our_model.set_optimizer(
         config["recognition_model_optimizer"],
