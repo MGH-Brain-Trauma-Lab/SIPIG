@@ -53,6 +53,12 @@ def train_behavior(
     our_model.set_class_weight(class_weights)
     print(f"M_ DEBUG: Class weights set in model: {our_model.class_weight}")
 
+    if config.get("recognition_model_augmentation", 0) > 0:
+        from SwissKnife.augmentations import mouse_identification
+        augmentation = mouse_identification(level=config["recognition_model_augmentation"])
+        our_model.set_augmentation(augmentation)
+        print(f"Using augmentation level {config['recognition_model_augmentation']}")
+    
     our_model.set_optimizer(
         config["recognition_model_optimizer"],
         lr=config["recognition_model_lr"],
@@ -67,7 +73,11 @@ def train_behavior(
         our_model.add_callbacks([CB_es, CB_lr])
 
     # add sklearn metrics for tracking in training
-    my_metrics = Metrics(validation_data=(dataloader.x_test, dataloader.y_test))
+    #my_metrics = Metrics(validation_data=(dataloader.x_test, dataloader.y_test))
+    my_metrics = Metrics(
+        validation_data=(dataloader.x_test, dataloader.y_test),
+        class_names=dataloader.label_encoder.classes_
+    )
     my_metrics.setModel(our_model.recognition_model)
     our_model.add_callbacks([my_metrics])
 

@@ -640,6 +640,7 @@ class Metrics(tf.keras.callbacks.Callback):
 
     def __init__(self, validation_data = None):
         self.validation_data = validation_data
+        self.class_names = class_names
 
     def setModel(self, model):
         self.model = model
@@ -651,19 +652,63 @@ class Metrics(tf.keras.callbacks.Callback):
         X_val, y_val = self.validation_data[0], self.validation_data[1]
         y_val = np.argmax(y_val, axis=-1)
 
-        # old
         y_predict = self.model.predict(X_val)
         y_predict = np.argmax(y_predict, axis=-1).astype(int)
-        print(classification_report(y_val, y_predict))
+#         print(classification_report(y_val, y_predict))
+
+        if self.class_names is not None:
+            print(classification_report(y_val, y_predict, target_names=self.class_names))
+        else:
+            print(classification_report(y_val, y_predict))
+
+        bal_acc = balanced_accuracy_score(y_val, y_predict)
+        f1 = f1_score(y_val, y_predict, average="macro")
+
+        from scipy.stats import pearsonr
+        corr = pearsonr(y_val, y_predict)[0]
 
         self._data.append(
             {
-                "val_balanced_acc": balanced_accuracy_score(y_val, y_predict),
-                "val_sklearn_f1": f1_score(y_val, y_predict, average="macro"),
+                "val_balanced_acc": bal_acc,
+                "val_sklearn_f1": f1,
+                "val_pearson_corr": corr,
             }
         )
-        print("val_balanced_acc ::: " + str(balanced_accuracy_score(y_val, y_predict)))
-        print("val_sklearn_f1 ::: " + str(f1_score(y_val, y_predict, average="macro")))
+        print("val_balanced_acc ::: " + str(bal_acc))
+        print("val_sklearn_f1 ::: " + str(f1))
+        print("val_pearson_corr ::: " + str(corr))
+
+        # Log to wandb if available
+        try:
+            import wandb
+            if wandb.run is not None:
+                # Overall metrics
+                wandb.log({
+                    "val_balanced_accuracy": bal_acc,
+                    "val_macro_f1": f1,
+                    "val_pearson_corr": corr,
+                })
+
+                # Per-class metrics
+                report_dict = classification_report(y_val, y_predict, output_dict=True, zero_division=0)
+
+                # Get class names from wandb config or use indices
+                if hasattr(wandb.config, 'classes') and wandb.config.classes:
+                    class_names = wandb.config.classes
+                else:
+                    class_names = [f"class_{i}" for i in range(len(set(y_val)))]
+
+                for i, class_name in enumerate(class_names):
+                    if str(i) in report_dict:
+                        wandb.log({
+                            f"val_per_class/f1/{class_name}": report_dict[str(i)]['f1-score'],
+                            f"val_per_class/precision/{class_name}": report_dict[str(i)]['precision'],
+                            f"val_per_class/recall/{class_name}": report_dict[str(i)]['recall'],
+                            f"val_per_class/support/{class_name}": report_dict[str(i)]['support'],
+        })
+        except ImportError:
+            pass
+
         return
 
     def get_data(self):
