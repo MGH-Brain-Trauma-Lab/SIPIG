@@ -45,9 +45,6 @@ def parse_via_video_json_for_clip(json_data, clip_filename, framerate):
     else:
         labels = []
     
-    # Variable to keep track of the first valid label (behavior)
-    first_behavior = None
-    
     # Find all metadata entries for this clip
     for meta_id, meta in json_data['metadata'].items():
         if str(meta['vid']) == str(clip_fid):
@@ -57,16 +54,9 @@ def parse_via_video_json_for_clip(json_data, clip_filename, framerate):
             start_frame = int(start_sec * framerate)
             end_frame = int(end_sec * framerate)
             
-            # If we haven't seen a behavior label yet, set the first valid label
-            if first_behavior is None:
-                first_behavior = behavior
-                # Backfill the beginning of the clip with the first valid label
-                if start_frame > 0:
-                    labels[:start_frame] = [first_behavior] * start_frame
-            
             # Extend labels array if needed (when duration wasn't in JSON)
             if not num_frames and end_frame > len(labels):
-                labels.extend([behavior] * (end_frame - len(labels)))
+                labels.extend(['none'] * (end_frame - len(labels)))
             
             # Fill in behavior labels for the current metadata range
             if num_frames:
@@ -74,22 +64,8 @@ def parse_via_video_json_for_clip(json_data, clip_filename, framerate):
             
             labels[start_frame:end_frame] = [behavior] * (end_frame - start_frame)
     
-    # If there was no valid metadata entry at the beginning, backfill with the first behavior
-    if first_behavior is not None and labels[0] == 'none':
-        labels = [first_behavior] * len(labels)
-    
-    # --- PATCH: replace 'none' with the preceding valid label ---
-    def backfill_none(labels):
-        last = None
-        for i in range(len(labels)):
-            if labels[i] != 'none':
-                last = labels[i]
-            elif last is not None:
-                labels[i] = last
-        return labels
-
-    labels = backfill_none(labels)
-    # ------------------------------------------------------------
+    # No backfilling - unlabelled frames will remain as 'none'
+    # They will be filtered out during clip loading
     
     return labels
 
@@ -98,6 +74,7 @@ def parse_via_video_json_for_clip(json_data, clip_filename, framerate):
 def load_clips_from_directory(clips_dir, annotations_json, framerate=1, greyscale=False):
     """
     Load all video clips from a directory and their corresponding labels.
+    Drops frames with 'none' labels (unlabelled frames).
     
     Args:
         clips_dir: Path to directory containing clip videos (e.g., "output/train/")
@@ -153,10 +130,25 @@ def load_clips_from_directory(clips_dir, annotations_json, framerate=1, greyscal
                 else:
                     labels = labels[:len(video)]
             
-            all_videos.append(video)
-            all_labels.append(labels)
+            # Filter out unlabelled frames
+            labels_array = np.array(labels)
+            valid_mask = labels_array != 'none'
             
-            print(f"{len(video)} frames")
+            if not np.any(valid_mask):
+                print(f"SKIPPED (no labelled frames)")
+                continue
+            
+            filtered_video = video[valid_mask]
+            filtered_labels = labels_array[valid_mask].tolist()
+            
+            dropped_frames = len(video) - len(filtered_video)
+            if dropped_frames > 0:
+                print(f"{len(filtered_video)} frames (dropped {dropped_frames} unlabelled)")
+            else:
+                print(f"{len(filtered_video)} frames")
+            
+            all_videos.append(filtered_video)
+            all_labels.append(filtered_labels)
             
         except ValueError as e:
             print(f"ERROR: {e}")
