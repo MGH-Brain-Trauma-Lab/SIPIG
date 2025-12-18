@@ -5,6 +5,7 @@ from SwissKnife.clip_loader import load_training_data
 from SwissKnife.dataloader import Dataloader
 from SwissKnife.behavior import train_behavior
 from SwissKnife.utils import load_config
+from SwissKnife.augmentations import mouse_identification
 from sklearn.utils import class_weight
 from datetime import datetime
 import numpy as np
@@ -14,8 +15,26 @@ import matplotlib.pyplot as plt
 import seaborn as sns 
 from sklearn import metrics
 
+import os
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+
+import tensorflow as tf
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    try:
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+            # Also try limiting total memory
+            tf.config.set_logical_device_configuration(
+                gpu,
+                [tf.config.LogicalDeviceConfiguration(memory_limit=20480)]  # 20GB limit
+            )
+    except RuntimeError as e:
+        print(e)
+
+
 # Configuration
-CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/distilled_clips_gpu_test/'
+CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_split_5min_1fps_petite/'
 CONFIG_NAME = 'default'
 
 # Load data
@@ -27,36 +46,28 @@ data = load_training_data(
 )
 
 x_train, y_train = data['train']
-
-# Handle validation data
-if 'val' in data:
-    x_val, y_val = data['val']
-    print(f"Using separate validation set")
-else:
-    x_val, y_val = None, None
-    print(f"No validation set found, will use test as validation")
-
-# Handle test data
-if 'test' in data:
-    x_test, y_test = data['test']
-else:
-    # If no test set, use val as test (shouldn't happen with your setup)
-    x_test, y_test = x_val, y_val
-    x_val, y_val = None, None
-
+x_val, y_val = data['val']
+x_test, y_test = data['test']
+    
 print(f"\nData loaded:")
 print(f"  Train: {x_train.shape}, labels: {len(y_train)}")
-if x_val is not None:
-    print(f"  Val: {x_val.shape}, labels: {len(y_val)}")
+print(f"  Val: {x_val.shape}, labels: {len(y_val)}")
 print(f"  Test: {x_test.shape}, labels: {len(y_test)}")
+
+# ========= how does model do with just "lying" ==========
+# y_train = ['lying' if 'lying' in label else label for label in y_train]
+# y_test = ['lying' if 'lying' in label else label for label in y_test]
+# if y_val is not None:
+#     y_val = ['lying' if 'lying' in label else label for label in y_val]
+# also need to change num_classes
+# ========================================================
 
 # Check label distribution
 from collections import Counter
 train_dist = Counter(y_train)
 print(f"\nTrain label distribution: {train_dist}")
-if y_val is not None:
-    val_dist = Counter(y_val)
-    print(f"Val label distribution: {val_dist}")
+val_dist = Counter(y_val)
+print(f"Val label distribution: {val_dist}")
 test_dist = Counter(y_test)
 print(f"Test label distribution: {test_dist}")
 
@@ -65,9 +76,11 @@ config = load_config(f"configs/behavior/{CONFIG_NAME}")
 
 # CRITICAL: Fix string booleans from config file
 config['train_recognition_model'] = True  # Force boolean
-config['train_sequential_model'] = False  # Force boolean
-config['recognition_model_use_scheduler'] = True  # Force boolean
+config['train_sequential_model'] = True  # Force boolean
+
+config['recognition_model_use_scheduler'] = False  # Force boolean
 config['use_class_weights'] = True  # Force boolean
+config['recognition_model_fix'] = False
 
 # Image dimensions
 config['image_x'] = 200
@@ -83,15 +96,17 @@ config['do_flow'] = False
 config['undersample_data'] = False
 
 # Model architecture
-config['backbone'] = 'xception'
-
+# config['backbone'] = 'xception'
+config['backbone'] = 'mobilenet'
+    
 # Recognition model parameters
 config['recognition_model_optimizer'] = 'adam'
 config['recognition_model_lr'] = 0.0001
-config['recognition_model_epochs'] = 15
+config['recognition_model_epochs'] = 1
 config['recognition_model_batch_size'] = 16
 config['recognition_model_fix'] = False
 config['recognition_model_remove_classification'] = False
+config['recognition_model_augmentation'] = 0 # 0-3 levels
 
 # Scheduler parameters (these need to match Model class attributes)
 config['recognition_model_scheduler_lr'] = 0.0001  # Initial LR for scheduler
@@ -105,11 +120,6 @@ config['sequential_model_lr'] = 0.0001
 config['sequential_model_use_scheduler'] = False
 config['sequential_model_epochs'] = 50
 config['sequential_model_batch_size'] = 16
-
-val_dist = None
-if y_val is not None:
-    val_dist = Counter(y_val)
-    print(f"Val label distribution: {val_dist}")
 
 wandb.init(
     project="SIPIG-initial",
@@ -132,10 +142,10 @@ wandb.init(
         "use_generator": config['use_generator'],
         # Data statistics
         "train_samples": len(y_train),
-        "val_samples": len(y_val) if y_val is not None else 0,
+        "val_samples": len(y_val),
         "test_samples": len(y_test),
         "train_distribution": dict(train_dist),
-        "val_distribution": dict(val_dist) if val_dist is not None else None,
+        "val_distribution": dict(val_dist),
         "test_distribution": dict(test_dist),
     }
 )
@@ -159,33 +169,27 @@ for key in ['train_recognition_model', 'use_class_weights', 'recognition_model_u
     print(f"  {key}: {config[key]} (type: {type(config[key])})")
 
 # =================oversampling========================
-from imblearn.over_sampling import RandomOverSampler
+# from imblearn.over_sampling import RandomOverSampler
 
-print("\nOversampling minority classes...")
-ros = RandomOverSampler(random_state=42)
-x_train_flat = x_train.reshape(len(x_train), -1)
-x_train_resampled, y_train_resampled = ros.fit_resample(x_train_flat, y_train)
-x_train = x_train_resampled.reshape(-1, *x_train.shape[1:])
-y_train = y_train_resampled
+# print("\nOversampling minority classes...")
+# ros = RandomOverSampler(random_state=42)
+# x_train_flat = x_train.reshape(len(x_train), -1)
+# x_train_resampled, y_train_resampled = ros.fit_resample(x_train_flat, y_train)
+# x_train = x_train_resampled.reshape(-1, *x_train.shape[1:])
+# y_train = y_train_resampled
 
-print(f"After oversampling: {Counter(y_train)}")
+# print(f"After oversampling: {Counter(y_train)}")
 # =========================================
 
 # Create SIPEC dataloader with appropriate validation data
 print("\nCreating dataloader...")
-if x_val is not None:
-    # Use val set for validation during training
-    dataloader = Dataloader(x_train, y_train, x_val, y_val, config=config)
-    print("Using validation set for training validation")
-else:
-    # Use test set for validation during training
-    dataloader = Dataloader(x_train, y_train, x_test, y_test, config=config)
-    print("Using test set for training validation")
+dataloader = Dataloader(x_train, y_train, x_val, y_val, config=config)
 
 # Prepare data
 print("Preparing data...")
 dataloader.prepare_data(
     downscale=(75, 75),
+#     downscale=(200, 200),
     remove_behaviors=[],
     flatten=False,
     recurrent=False
@@ -238,7 +242,6 @@ if config['use_class_weights']:
         class_weights_dict = {i: class_weights[i] for i in range(len(class_weights))}
         print(f"\nClass weights as dict: {class_weights_dict}")
         class_weights = class_weights_dict  # Pass dict instead of array
-
 # ============================================
         
 # Train model
@@ -281,16 +284,21 @@ wandb.log({
     "val_pearson_corr": results[2],
 })
 
+# Get predictions to calculate per-class metrics
+val_predictions = model.recognition_model.predict(dataloader.x_test)
+val_pred_labels = np.argmax(val_predictions, axis=-1)
+val_true_labels = np.argmax(dataloader.y_test, axis=-1)
+
 # Parse classification report for per-class metrics
 report_dict = metrics.classification_report(
-    np.argmax(dataloader.y_test, axis=-1),
-    res,
-    target_names=label_encoder.classes_,
+    val_true_labels,
+    val_pred_labels,
+    target_names=dataloader.label_encoder.classes_,
     output_dict=True
 )
 
 # Log per-class metrics with class names
-for class_name in label_encoder.classes_:
+for class_name in dataloader.label_encoder.classes_:
     wandb.log({
         f"val_{class_name}_precision": report_dict[class_name]['precision'],
         f"val_{class_name}_recall": report_dict[class_name]['recall'],
@@ -298,83 +306,29 @@ for class_name in label_encoder.classes_:
     })
 
 # =================== wandb logging =======================
-    
-# If we have a separate test set, evaluate on it
-if x_val is not None and x_test is not None:
-    print("\n" + "="*80)
-    print("EVALUATING ON TEST SET")
-    print("="*80)
-    
-    # Create a separate dataloader for test evaluation
-    test_dataloader = Dataloader(x_train, y_train, x_test, y_test, config=config)
-    test_dataloader.prepare_data(
-        downscale=(75, 75),
-        remove_behaviors=[],
-        flatten=False,
-        recurrent=False
-    )
-    
-    # Evaluate on test set
-    from sklearn import metrics
-    from scipy.stats import pearsonr
-    
-    print(f"Test set size: {len(test_dataloader.x_test)}")
-    
-    # Get predictions
-    test_predictions = model.recognition_model.predict(test_dataloader.x_test)
-    test_pred_labels = np.argmax(test_predictions, axis=-1)
-    test_true_labels = np.argmax(test_dataloader.y_test, axis=-1)
 
-    test_pred_labels = np.argmax(test_predictions, axis=-1)
-    test_pred_behaviors = label_encoder.inverse_transform(test_pred_labels)
-    print(f"\nPrediction distribution: {Counter(test_pred_behaviors)}")
-    
-    # Calculate metrics
-    test_acc = metrics.balanced_accuracy_score(test_true_labels, test_pred_labels)
-    test_f1 = metrics.f1_score(test_true_labels, test_pred_labels, average='macro')
-    test_corr = pearsonr(test_pred_labels, test_true_labels)[0]
-    
-    test_report = metrics.classification_report(
-        test_true_labels,
-        test_pred_labels,
-        target_names=['lying_asleep', 'lying_awake', 'upright', 'obstructed']
-    )
-    
-    print("\nTest Set Classification Report:")
-    print(test_report)
-    print(f"\nTest Set Metrics:")
-    print(f"  Balanced Accuracy: {test_acc:.4f}")
-    print(f"  Macro F1: {test_f1:.4f}")
-    print(f"  Pearson Correlation: {test_corr:.4f}")
-    
-    # Log test results to wandb
-    wandb.log({
-        "test_balanced_accuracy": test_acc,
-        "test_macro_f1": test_f1,
-        "test_pearson_corr": test_corr,
-    })
-    
-    # Log test classification report
-    wandb.log({"test_classification_report": wandb.Html(f"<pre>{test_report}</pre>")})
-    
-    # Create confusion matrix
-    from sklearn.metrics import confusion_matrix
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    
-    cm = confusion_matrix(test_true_labels, test_pred_labels)
-    
-    fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                xticklabels=['lying_asleep', 'lying_awake', 'upright', 'obstructed'],
-                yticklabels=['lying_asleep', 'lying_awake', 'upright', 'obstructed'],
-                ax=ax)
-    ax.set_xlabel('Predicted')
-    ax.set_ylabel('True')
-    ax.set_title('Test Set Confusion Matrix')
-    
-    wandb.log({"test_confusion_matrix": wandb.Image(fig)})
-    plt.close(fig)
+# ================== Confusion Matrix =====================
+print("\n" + "="*80)
+print("MAKING VAL CONFUSION MATRIX")
+print("="*80)
+
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+cm = confusion_matrix(val_true_labels, val_pred_labels)
+
+fig, ax = plt.subplots(figsize=(10, 8))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+            xticklabels=['lying_asleep', 'lying_awake', 'upright', 'obstructed'],
+            yticklabels=['lying_asleep', 'lying_awake', 'upright', 'obstructed'],
+            ax=ax)
+ax.set_xlabel('Predicted')
+ax.set_ylabel('True')
+ax.set_title('Validation Set Confusion Matrix')
+
+wandb.log({"val_confusion_matrix": wandb.Image(fig)})
+plt.close(fig)
 
 # Save model
 now = datetime.now().strftime("%m-%d-%Y_%HH-%MM-%SS")
