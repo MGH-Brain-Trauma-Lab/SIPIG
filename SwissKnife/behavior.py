@@ -98,6 +98,7 @@ def train_behavior(
                 look_back=dataloader.config["look_back"],
                 batch_size=config["recognition_model_batch_size"],
                 type="recognition",
+                temporal_causal=config["temporal_causal"]
             )
             dataloader.validation_generator = DataGenerator(
                 x_train=dataloader.x_test,
@@ -105,6 +106,7 @@ def train_behavior(
                 look_back=dataloader.config["look_back"],
                 batch_size=config["recognition_model_batch_size"],
                 type="recognition",
+                temporal_causal=config["temporal_causal"]
             )
         our_model.recognition_model_epochs = config["recognition_model_epochs"]
         our_model.recognition_model_batch_size = config["recognition_model_batch_size"]
