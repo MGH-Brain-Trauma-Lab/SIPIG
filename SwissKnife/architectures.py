@@ -579,71 +579,115 @@ def recurrent_model_tcn(
     return sequential_model
 
 
-def recurrent_model_lstm(
-    recognition_model, recurrent_input_shape, classes=4, recurrent_dropout=None
-):
-    """Recurrent architecture for classification of temporal sequences of
-    images based on LSTMs or GRUs.
-    This architecture is used for IdNet in SIPEC.
+# def recurrent_model_lstm(
+#     recognition_model, recurrent_input_shape, classes=4, recurrent_dropout=None
+# ):
+#     """Recurrent architecture for classification of temporal sequences of
+#     images based on LSTMs or GRUs.
+#     This architecture is used for IdNet in SIPEC.
 
-    Parameters
-    ----------
-    recognition_model : keras.model
-        Pretrained recognition model that extracts features for individual frames.
-    recurrent_input_shape : np.ndarray - (Time, Width, Height, Channels)
-        Shape of the images over time.
-    classes : int
-        Number of behaviors to recognise.
-    recurrent_dropout : float
-        Recurrent dropout factor to use.
+#     Parameters
+#     ----------
+#     recognition_model : keras.model
+#         Pretrained recognition model that extracts features for individual frames.
+#     recurrent_input_shape : np.ndarray - (Time, Width, Height, Channels)
+#         Shape of the images over time.
+#     classes : int
+#         Number of behaviors to recognise.
+#     recurrent_dropout : float
+#         Recurrent dropout factor to use.
 
-    Returns
-    -------
-    keras.model
-        IdNet
+#     Returns
+#     -------
+#     keras.model
+#         IdNet
+#     """
+#     input_sequences = Input(shape=recurrent_input_shape)
+#     sequential_model_helper = TimeDistributed(recognition_model)(input_sequences)
+#     k = BatchNormalization()(sequential_model_helper)
+
+#     dout = 0.2
+
+#     if recurrent_dropout:
+#         # TODO: adjust bidirectional
+#         k = LSTM(units=128, return_sequences=True, recurrent_dropout=recurrent_dropout)(
+#             k
+#         )
+#         k = LSTM(units=64, return_sequences=True, recurrent_dropout=recurrent_dropout)(
+#             k
+#         )
+#         k = LSTM(units=32, return_sequences=False, recurrent_dropout=recurrent_dropout)(
+#             k
+#         )
+
+#     else:
+#         # As of TF 2, one can just use LSTM and there is no CuDNNGRU
+#         k = Bidirectional(GRU(units=128, return_sequences=True))(k)
+#         k = Activation(LeakyReLU(alpha=0.3))(k)
+#         k = Bidirectional(GRU(units=64, return_sequences=True))(k)
+#         k = Activation(LeakyReLU(alpha=0.3))(k)
+#         k = Bidirectional(GRU(units=32, return_sequences=False))(k)
+#         k = Activation(LeakyReLU(alpha=0.3))(k)
+
+#     # k = Dense(256)(k)
+#     # k = Activation('relu')(k)
+#     # k = Dropout(dout)(k)
+
+#     # k = Dense(128)(k)
+#     # k = Activation("relu")(k)
+#     # k = Dropout(dout)(k)
+#     # k = Dense(64)(k)
+
+#     k = Dropout(dout)(k)
+#     k = Dense(classes)(k)
+#     k = Activation("softmax")(k)
+
+#     sequential_model = Model(inputs=input_sequences, outputs=k)
+
+#     return sequential_model
+
+def recurrent_model_lstm(recognition_model, input_shape, classes):
     """
-    input_sequences = Input(shape=recurrent_input_shape)
-    sequential_model_helper = TimeDistributed(recognition_model)(input_sequences)
-    k = BatchNormalization()(sequential_model_helper)
-
-    dout = 0.2
-
-    if recurrent_dropout:
-        # TODO: adjust bidirectional
-        k = LSTM(units=128, return_sequences=True, recurrent_dropout=recurrent_dropout)(
-            k
-        )
-        k = LSTM(units=64, return_sequences=True, recurrent_dropout=recurrent_dropout)(
-            k
-        )
-        k = LSTM(units=32, return_sequences=False, recurrent_dropout=recurrent_dropout)(
-            k
-        )
-
-    else:
-        # As of TF 2, one can just use LSTM and there is no CuDNNGRU
-        k = Bidirectional(GRU(units=128, return_sequences=True))(k)
-        k = Activation(LeakyReLU(alpha=0.3))(k)
-        k = Bidirectional(GRU(units=64, return_sequences=True))(k)
-        k = Activation(LeakyReLU(alpha=0.3))(k)
-        k = Bidirectional(GRU(units=32, return_sequences=False))(k)
-        k = Activation(LeakyReLU(alpha=0.3))(k)
-
-    # k = Dense(256)(k)
-    # k = Activation('relu')(k)
-    # k = Dropout(dout)(k)
-
-    # k = Dense(128)(k)
-    # k = Activation("relu")(k)
-    # k = Dropout(dout)(k)
-    # k = Dense(64)(k)
-
-    k = Dropout(dout)(k)
-    k = Dense(classes)(k)
-    k = Activation("softmax")(k)
-
-    sequential_model = Model(inputs=input_sequences, outputs=k)
-
+    Build LSTM model that processes sequences using recognition model features.
+    Uses modern tf.function approach instead of TimeDistributed to avoid TFOpLambda issues.
+    """
+    from tensorflow.keras.layers import Input, LSTM, Dense, Lambda
+    from tensorflow.keras.models import Model
+    import tensorflow as tf
+    
+    input_sequences = Input(shape=input_shape)
+    
+    # Extract features from each timestep using recognition model
+    def extract_features(sequences):
+        """Apply recognition model to each frame in the sequence"""
+        # Get shapes
+        batch_size = tf.shape(sequences)[0]
+        n_timesteps = sequences.shape[1]
+        
+        # Reshape: (batch, timesteps, h, w, c) -> (batch*timesteps, h, w, c)
+        frames = tf.reshape(sequences, [-1] + list(sequences.shape[2:]))
+        
+        # Apply recognition model to all frames at once
+        features = recognition_model(frames, training=False)
+        
+        # Reshape back: (batch*timesteps, features) -> (batch, timesteps, features)
+        n_features = features.shape[-1]
+        sequences_features = tf.reshape(features, [batch_size, n_timesteps, n_features])
+        
+        return sequences_features
+    
+    # Apply feature extraction
+    sequential_model_helper = Lambda(extract_features)(input_sequences)
+    
+    # LSTM layer
+    sequential_model_helper = LSTM(128, return_sequences=False)(sequential_model_helper)
+    
+    # Output layer
+    sequential_model_prediction = Dense(classes, activation="softmax")(sequential_model_helper)
+    
+    # Build model
+    sequential_model = Model(inputs=input_sequences, outputs=sequential_model_prediction)
+    
     return sequential_model
 
 
