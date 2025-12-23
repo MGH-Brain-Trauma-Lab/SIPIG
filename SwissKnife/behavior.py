@@ -51,7 +51,6 @@ def train_behavior(
     )
 
     our_model.set_class_weight(class_weights)
-    print(f"M_ DEBUG: Class weights set in model: {our_model.class_weight}")
 
     if config.get("recognition_model_augmentation", 0) > 0:
         from SwissKnife.augmentations import mouse_identification
@@ -140,12 +139,36 @@ def train_behavior(
             input_shape=dataloader.get_input_shape(recurrent=True),
             num_classes=num_classes,
         )
-        my_metrics.setModel(our_model.sequential_model)
-        my_metrics.validation_data = (
-            dataloader.x_test_recurrent,
-            dataloader.y_test_recurrent,
-        )
-        our_model.add_callbacks([my_metrics])
+# ++++++++++++ Metric Error +++++++++++++++
+        # COMMENT OUT THESE LINES:
+        # my_metrics.setModel(our_model.sequential_model)
+        # my_metrics.validation_data = (
+        #     dataloader.x_test_recurrent,
+        #     dataloader.y_test_recurrent,
+        # )
+        # our_model.add_callbacks([my_metrics])
+
+        # Reset callbacks to remove metrics
+        our_model.callbacks = []
+
+        # Add back only essential callbacks
+        if config["sequential_model_use_scheduler"]:
+            our_model.scheduler_lr = config["sequential_model_scheduler_lr"]
+            our_model.scheduler_factor = config["sequential_model_scheduler_factor"]
+            our_model.set_lr_scheduler()
+        else:
+            CB_es, CB_lr = callbacks_learningRate_plateau()
+            our_model.add_callbacks([CB_es, CB_lr])
+
+        # Add WandB callback
+        try:
+            from wandb.integration.keras import WandbMetricsLogger
+            wandb_callback = WandbMetricsLogger(log_freq='epoch')
+            our_model.add_callbacks([wandb_callback])
+        except ImportError:
+            pass
+# +++++++++++++++++++++++++++
+
         our_model.set_optimizer(
             config["sequential_model_optimizer"],
             lr=config["sequential_model_lr"],
@@ -163,6 +186,31 @@ def train_behavior(
     print(config)
 
     print("evaluating")
+    
+# ++++++++++++++++ DATA GENERATOR EVALUATION ++++++++++
+    # Skip evaluation if using generator (data not in expected format)
+    if config.get("use_generator", False):
+        print("Skipping batch-by-batch evaluation when using generator")
+        print("Use model.evaluate() on validation_generator instead")
+
+        # Quick evaluation using generator
+        if config["train_sequential_model"]:
+            results = our_model.sequential_model.evaluate(
+                dataloader.validation_generator,
+                verbose=1
+            )
+            print(f"Validation results: {results}")
+            return our_model, [0.0, 0.0, 0.0], "Evaluation completed via generator"
+        else:
+            results = our_model.recognition_model.evaluate(
+                dataloader.validation_generator,
+                verbose=1
+            )
+            print(f"Validation results: {results}")
+            return our_model, [0.0, 0.0, 0.0], "Evaluation completed via generator"
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+    
     res = []
     batches = len(dataloader.x_test)
     batches = int(batches / config["sequential_model_batch_size"])

@@ -14,11 +14,11 @@ from wandb.integration.keras import WandbMetricsLogger, WandbModelCheckpoint
 import matplotlib.pyplot as plt
 import seaborn as sns 
 from sklearn import metrics
-
-import os
-os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
-
 import tensorflow as tf
+import os
+
+# =========== ALLOW GPU GROWTH (allows for more gpu use) ==========
+os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 gpus = tf.config.list_physical_devices('GPU')
 if gpus:
     try:
@@ -31,13 +31,13 @@ if gpus:
             )
     except RuntimeError as e:
         print(e)
-
+# ==================================================
 
 # Configuration
 CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_split_5min_1fps_petite/'
 CONFIG_NAME = 'default'
 
-# Load data
+# =========== LOAD TRAINING/VAL/TEST DATA ==========
 print("Loading clips...")
 data = load_training_data(
     CLIPS_OUTPUT_DIR,
@@ -54,13 +54,13 @@ print(f"  Train: {x_train.shape}, labels: {len(y_train)}")
 print(f"  Val: {x_val.shape}, labels: {len(y_val)}")
 print(f"  Test: {x_test.shape}, labels: {len(y_test)}")
 
-# ========= how does model do with just "lying" ==========
+# +++++++++ COMBINE LYING INTO ONE CATEGORY +++++++++
 # y_train = ['lying' if 'lying' in label else label for label in y_train]
 # y_test = ['lying' if 'lying' in label else label for label in y_test]
 # if y_val is not None:
 #     y_val = ['lying' if 'lying' in label else label for label in y_val]
-# also need to change num_classes
-# ========================================================
+# NOTE: Also need to change num_classes to 3
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 # Check label distribution
 from collections import Counter
@@ -70,7 +70,9 @@ val_dist = Counter(y_val)
 print(f"Val label distribution: {val_dist}")
 test_dist = Counter(y_test)
 print(f"Test label distribution: {test_dist}")
+# ========================================================
 
+# ================== CONFIGS ==========================
 # Load SIPEC config
 config = load_config(f"configs/behavior/{CONFIG_NAME}")
 
@@ -80,7 +82,6 @@ config['train_sequential_model'] = True  # Force boolean
 
 config['recognition_model_use_scheduler'] = False  # Force boolean
 config['use_class_weights'] = True  # Force boolean
-config['recognition_model_fix'] = False
 
 # Image dimensions
 config['image_x'] = 200
@@ -104,9 +105,9 @@ config['recognition_model_optimizer'] = 'adam'
 config['recognition_model_lr'] = 0.0001
 config['recognition_model_epochs'] = 1
 config['recognition_model_batch_size'] = 16
-config['recognition_model_fix'] = False
-config['recognition_model_remove_classification'] = False
-config['recognition_model_augmentation'] = 0 # 0-3 levels
+config['recognition_model_fix'] = True
+config['recognition_model_remove_classification'] = True
+config['recognition_model_augmentation'] = 2 # 0-3 levels
 
 # Scheduler parameters (these need to match Model class attributes)
 config['recognition_model_scheduler_lr'] = 0.0001  # Initial LR for scheduler
@@ -118,9 +119,12 @@ config['sequential_backbone'] = 'lstm'
 config['sequential_model_optimizer'] = 'adam'
 config['sequential_model_lr'] = 0.0001
 config['sequential_model_use_scheduler'] = False
-config['sequential_model_epochs'] = 50
+config['sequential_model_epochs'] = 1
 config['sequential_model_batch_size'] = 16
+config["temporal_causal"] = False # personally created parameter --> used in SwissKnife/behavior.py
+# ========================================================
 
+# ================= WANDB INITIAL LOGGING ========================
 wandb.init(
     project="SIPIG-initial",
     name=f"train_{datetime.now().strftime('%m%d_%H%M')}",
@@ -167,8 +171,9 @@ plt.close(fig)
 print("\nConfig being used:")
 for key in ['train_recognition_model', 'use_class_weights', 'recognition_model_use_scheduler']:
     print(f"  {key}: {config[key]} (type: {type(config[key])})")
+# =======================================================
 
-# =================oversampling========================
+# ================= OVERSAMPLING ========================
 # from imblearn.over_sampling import RandomOverSampler
 
 # print("\nOversampling minority classes...")
@@ -179,8 +184,36 @@ for key in ['train_recognition_model', 'use_class_weights', 'recognition_model_u
 # y_train = y_train_resampled
 
 # print(f"After oversampling: {Counter(y_train)}")
-# =========================================
+# ==========================================================
 
+# ============ ADD PRE-LOADER AUGMENTATION HERE ============
+# standard augmentation doesn't work with sequential's TimeDistributed wrapper,
+# so move the augmentations to occur before running the model
+
+from SwissKnife.augmentations import mouse_identification
+from tqdm import tqdm
+
+print("Applying augmentation to training data...")
+level = config['recognition_model_augmentation']
+
+if level > 0:
+    augmentation = mouse_identification(level=level)
+    config['recognition_model_augmentation'] = 0 # turn it off since we are doing augmentation here
+
+    # Augment training data
+    x_train_augmented = []
+    for img in tqdm(x_train, desc="Augmenting training data"):
+        aug_img = augmentation(image=img)
+        x_train_augmented.append(aug_img)
+    x_train = np.array(x_train_augmented)
+else:
+    print('Augmentation level 0: No augmentation being performed')
+
+# DON'T augment validation/test data!
+print("Augmentation complete!")
+# ===============================================
+
+# ================= DATA LOADER =================
 # Create SIPEC dataloader with appropriate validation data
 print("\nCreating dataloader...")
 dataloader = Dataloader(x_train, y_train, x_val, y_val, config=config)
@@ -194,8 +227,9 @@ dataloader.prepare_data(
     flatten=False,
     recurrent=False
 )
+# =================================================
 
-# ================= class weights =================
+# ================= CLASS WEIGHTS =================
 # CRITICAL: Calculate class weights BEFORE training
 class_weights = None
 if config['use_class_weights']:
@@ -213,6 +247,7 @@ if config['use_class_weights']:
     print(f"Class weights: {class_weights}")
     print(f"Classes: {label_encoder.classes_}")
     
+# ++++ SET MANUAL CLASS WEIGHTS ++++
 #     MANUAL WEIGHTS - Set these to whatever you want
 #     manual_weights = {
 #         'lying asleep': 0.0,
@@ -226,6 +261,7 @@ if config['use_class_weights']:
     
 #     print(f"Manual class weights: {class_weights}")
 #     print(f"Classes: {label_encoder.classes_}")
+# +++++++++++++++++++++++++++++++++++
     
     print(f"Weight distribution:")
     for i, cls in enumerate(label_encoder.classes_):
@@ -242,9 +278,10 @@ if config['use_class_weights']:
         class_weights_dict = {i: class_weights[i] for i in range(len(class_weights))}
         print(f"\nClass weights as dict: {class_weights_dict}")
         class_weights = class_weights_dict  # Pass dict instead of array
-# ============================================
+# ==========================================================
         
-# Train model
+# =================== MODEL TRAINING =======================
+
 print("\n" + "="*80)
 print("TRAINING MODEL")
 print("="*80)
@@ -265,7 +302,7 @@ print("Classification Report:")
 print(report)
 print(f"\nMetrics (acc, f1, corr): {results}")
 
-# =================== wandb logging =======================
+# =================== WANDB RESULTS LOGGING =======================
 
 # Log validation results to wandb
 wandb.log({
@@ -305,9 +342,9 @@ for class_name in dataloader.label_encoder.classes_:
         f"val_{class_name}_f1": report_dict[class_name]['f1-score'],
     })
 
-# =================== wandb logging =======================
+# ======================================================================
 
-# ================== Confusion Matrix =====================
+# ================== MAKE AND LOG CONFUSION MATRIX =====================
 print("\n" + "="*80)
 print("MAKING VAL CONFUSION MATRIX")
 print("="*80)
@@ -351,7 +388,9 @@ artifact = wandb.Artifact(
 )
 artifact.add_file(name)
 wandb.log_artifact(artifact)
+# ===========================================================
 
+# =========== SAVE MODEL HISTORY + WEIGHTS TO WANDB =========
 # Save training history if available
 if hasattr(model, 'recognition_model_history') and model.recognition_model_history:
     import pickle
