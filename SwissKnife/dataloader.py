@@ -27,7 +27,7 @@ class DataGenerator(keras.utils.Sequence):
         type="recognition",
         batch_size=32,
         shuffle=True,
-        temporal_causal=True,
+        temporal_causal=False,
     ):
         # self.dim = dim
         self.batch_size = batch_size
