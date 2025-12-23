@@ -109,7 +109,7 @@ config['recognition_model_fix'] = True
 config['recognition_model_remove_classification'] = True
 config['recognition_model_augmentation'] = 2 # 0-3 levels
 
-# Scheduler parameters (these need to match Model class attributes)
+# Scheduler parameters
 config['recognition_model_scheduler_lr'] = 0.0001  # Initial LR for scheduler
 config['recognition_model_scheduler_factor'] = 1.1  # Division factor per epoch
 config['recognition_model_scheduler_lower_lr'] = 0.0000001  # Minimum LR
@@ -129,22 +129,9 @@ wandb.init(
     project="SIPIG-initial",
     name=f"train_{datetime.now().strftime('%m%d_%H%M')}",
     config={
-        # Model config
-        "architecture": config['backbone'],
-        "dataset": "distilled_clips",
-        "epochs": config['recognition_model_epochs'],
-        "batch_size": config['recognition_model_batch_size'],
-        "learning_rate": config['recognition_model_lr'],
-        "optimizer": config['recognition_model_optimizer'],
-        "image_size": (75, 75),
-        "num_classes": config['num_classes'],
-        "use_class_weights": config['use_class_weights'],
-        "use_scheduler": config['recognition_model_use_scheduler'],
-        "scheduler_lr": config['recognition_model_scheduler_lr'],
-        "scheduler_factor": config['recognition_model_scheduler_factor'],
-        "normalize_data": config['normalize_data'],
-        "use_generator": config['use_generator'],
-        # Data statistics
+        **config,  # Unpack all config items
+        # Add computed statistics
+        "dataset": CLIPS_OUTPUT_DIR.split('/')[-2],
         "train_samples": len(y_train),
         "val_samples": len(y_val),
         "test_samples": len(y_test),
@@ -190,27 +177,27 @@ for key in ['train_recognition_model', 'use_class_weights', 'recognition_model_u
 # standard augmentation doesn't work with sequential's TimeDistributed wrapper,
 # so move the augmentations to occur before running the model
 
-from SwissKnife.augmentations import mouse_identification
-from tqdm import tqdm
+# from SwissKnife.augmentations import mouse_identification
+# from tqdm import tqdm
 
-print("Applying augmentation to training data...")
-level = config['recognition_model_augmentation']
+# print("Applying augmentation to training data...")
+# level = config['recognition_model_augmentation']
 
-if level > 0:
-    augmentation = mouse_identification(level=level)
-    config['recognition_model_augmentation'] = 0 # turn it off since we are doing augmentation here
+# if level > 0:
+#     augmentation = mouse_identification(level=level)
+#     config['recognition_model_augmentation'] = 0 # turn it off since we are doing augmentation here
 
-    # Augment training data
-    x_train_augmented = []
-    for img in tqdm(x_train, desc="Augmenting training data"):
-        aug_img = augmentation(image=img)
-        x_train_augmented.append(aug_img)
-    x_train = np.array(x_train_augmented)
-else:
-    print('Augmentation level 0: No augmentation being performed')
+#     # Augment training data
+#     x_train_augmented = []
+#     for img in tqdm(x_train, desc="Augmenting training data"):
+#         aug_img = augmentation(image=img)
+#         x_train_augmented.append(aug_img)
+#     x_train = np.array(x_train_augmented)
+# else:
+#     print('Augmentation level 0: No augmentation being performed')
 
-# DON'T augment validation/test data!
-print("Augmentation complete!")
+# # DON'T augment validation/test data!
+# print("Augmentation complete!")
 # ===============================================
 
 # ================= DATA LOADER =================
