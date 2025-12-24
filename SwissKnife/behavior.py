@@ -97,7 +97,7 @@ def train_behavior(
                 look_back=dataloader.config["look_back"],
                 batch_size=config["recognition_model_batch_size"],
                 type="recognition",
-                temporal_causal=config["temporal_causal"]
+                temporal_causal=config["temporal_causal"],
             )
             dataloader.validation_generator = DataGenerator(
                 x_train=dataloader.x_test,
@@ -105,14 +105,15 @@ def train_behavior(
                 look_back=dataloader.config["look_back"],
                 batch_size=config["recognition_model_batch_size"],
                 type="recognition",
-                temporal_causal=config["temporal_causal"]
+                temporal_causal=config["temporal_causal"],
             )
         our_model.recognition_model_epochs = config["recognition_model_epochs"]
         our_model.recognition_model_batch_size = config["recognition_model_batch_size"]
         print()
         our_model.train_recognition_network(dataloader=dataloader)
         print(config)
-
+    # ++++++++++++++++++++++++ generated code ++++++++++++++++++
+    # ==================== SEQUENTIAL MODEL TRAINING ====================
     if config["train_sequential_model"]:
         if dataloader.config["use_generator"]:
             dataloader.training_generator = DataGenerator(
@@ -121,6 +122,7 @@ def train_behavior(
                 look_back=dataloader.config["look_back"],
                 batch_size=32,
                 type="sequential",
+                temporal_causal=config["temporal_causal"],
             )
             dataloader.validation_generator = DataGenerator(
                 x_train=dataloader.x_test,
@@ -128,89 +130,99 @@ def train_behavior(
                 look_back=dataloader.config["look_back"],
                 batch_size=config["recognition_model_batch_size"],
                 type="sequential",
+                temporal_causal=config["temporal_causal"],
             )
-        # if False:
+
+            # ============ CREATE VALIDATION SUBSET FOR METRICS ============
+            print("\nCreating validation subset for metrics tracking...")
+
+            total_val_samples = len(dataloader.validation_generator) * config["recognition_model_batch_size"]
+            n_samples = min(2000, max(500, int(total_val_samples * 0.2)))
+            n_batches = int(n_samples / config["recognition_model_batch_size"])
+
+            sample_indices = np.linspace(0, len(dataloader.validation_generator) - 1, n_batches, dtype=int)
+
+            val_sequences = []
+            val_labels = []
+            for idx in sample_indices:
+                batch_x, batch_y = dataloader.validation_generator[idx]
+                val_sequences.append(batch_x)
+                val_labels.append(batch_y)
+
+            x_val_subset = np.concatenate(val_sequences, axis=0)
+            y_val_subset = np.concatenate(val_labels, axis=0)
+
+            print(f"Validation subset: {x_val_subset.shape} ({len(x_val_subset)/total_val_samples*100:.1f}%)")
+            # ===============================================================
+
         if config["recognition_model_fix"]:
             our_model.fix_recognition_layers()
         if config["recognition_model_remove_classification"]:
             our_model.remove_classification_layers()
+
         our_model.set_sequential_model(
             architecture=config["sequential_backbone"],
             input_shape=dataloader.get_input_shape(recurrent=True),
             num_classes=num_classes,
         )
-# ++++++++++++ Metric Error +++++++++++++++
-        # COMMENT OUT THESE LINES:
-        # my_metrics.setModel(our_model.sequential_model)
-        # my_metrics.validation_data = (
-        #     dataloader.x_test_recurrent,
-        #     dataloader.y_test_recurrent,
-        # )
-        # our_model.add_callbacks([my_metrics])
 
-        # Reset callbacks to remove metrics
-        our_model.callbacks = []
-
-        # Add back only essential callbacks
-        if config["sequential_model_use_scheduler"]:
-            our_model.scheduler_lr = config["sequential_model_scheduler_lr"]
-            our_model.scheduler_factor = config["sequential_model_scheduler_factor"]
-            our_model.set_lr_scheduler()
+        # ============ FIX METRICS CALLBACK ============
+        if dataloader.config["use_generator"]:
+            # Use the validation subset we created
+            my_metrics.validation_data = (x_val_subset, y_val_subset)
         else:
-            CB_es, CB_lr = callbacks_learningRate_plateau()
-            our_model.add_callbacks([CB_es, CB_lr])
+            # Use full recurrent data
+            my_metrics.validation_data = (dataloader.x_test_recurrent, dataloader.y_test_recurrent)
 
-        # Add WandB callback
-        try:
-            from wandb.integration.keras import WandbMetricsLogger
-            wandb_callback = WandbMetricsLogger(log_freq='epoch')
-            our_model.add_callbacks([wandb_callback])
-        except ImportError:
-            pass
-# +++++++++++++++++++++++++++
+        my_metrics.setModel(our_model.sequential_model)
+        our_model.add_callbacks([my_metrics])
+        # ==============================================
 
         our_model.set_optimizer(
             config["sequential_model_optimizer"],
             lr=config["sequential_model_lr"],
         )
+
+        # Setup scheduler OR standard callbacks
         if config["sequential_model_use_scheduler"]:
             our_model.scheduler_lr = config["sequential_model_scheduler_lr"]
             our_model.scheduler_factor = config["sequential_model_scheduler_factor"]
             our_model.set_lr_scheduler()
+        else:
+            # Use standard training callbacks (matches recognition model structure)
+            CB_es, CB_lr = callbacks_learningRate_plateau()
+            our_model.add_callbacks([CB_es, CB_lr])
 
+        # Training always happens (outside scheduler conditional)
         our_model.sequential_model_epochs = config["sequential_model_epochs"]
         our_model.sequential_model_batch_size = config["sequential_model_batch_size"]
-        print(our_model.sequential_model.summary())
+
+#         print("\n" + "="*80)
+#         print("ABOUT TO START SEQUENTIAL MODEL TRAINING")
+#         print("="*80)
+#         print(f"Model summary:")
+#         print(our_model.sequential_model.summary())
+#         print(f"Callbacks: {[type(cb).__name__ for cb in our_model.callbacks]}")
+#         print(f"Training generator batches: {len(dataloader.training_generator)}")
+#         print(f"Validation generator batches: {len(dataloader.validation_generator)}")
+#         print(f"Epochs: {our_model.sequential_model_epochs}")
+#         print("="*80 + "\n")
+
         our_model.train_sequential_network(dataloader=dataloader)
+
+        print("\n" + "="*80)
+        print("SEQUENTIAL TRAINING COMPLETED")
+        print("="*80 + "\n")
 
     print(config)
 
     print("evaluating")
-    
-# ++++++++++++++++ DATA GENERATOR EVALUATION ++++++++++
-    # Skip evaluation if using generator (data not in expected format)
-    if config.get("use_generator", False):
-        print("Skipping batch-by-batch evaluation when using generator")
-        print("Use model.evaluate() on validation_generator instead")
-
-        # Quick evaluation using generator
-        if config["train_sequential_model"]:
-            results = our_model.sequential_model.evaluate(
-                dataloader.validation_generator,
-                verbose=1
-            )
-            print(f"Validation results: {results}")
-            return our_model, [0.0, 0.0, 0.0], "Evaluation completed via generator"
-        else:
-            results = our_model.recognition_model.evaluate(
-                dataloader.validation_generator,
-                verbose=1
-            )
-            print(f"Validation results: {results}")
-            return our_model, [0.0, 0.0, 0.0], "Evaluation completed via generator"
-# ++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-    
+    # Skip evaluation if using generator (already have metrics from training)
+    if dataloader.config["use_generator"]:
+        print("Skipping final batch-by-batch evaluation (using generator)")
+        print("Validation metrics already computed during training")
+        return our_model, [0.0, 0.0, 0.0], "Training completed with generator"
+    # ++++++++++++++++++++++++++++++++++++++++++++++++
     res = []
     batches = len(dataloader.x_test)
     batches = int(batches / config["sequential_model_batch_size"])
