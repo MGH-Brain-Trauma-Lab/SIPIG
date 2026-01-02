@@ -7,7 +7,7 @@ from SwissKnife.behavior import train_behavior
 from SwissKnife.utils import load_config
 from SwissKnife.augmentations import mouse_identification
 from sklearn.utils import class_weight
-from datetime import datetime
+from datetime import datetime 
 import numpy as np
 import wandb
 from wandb.integration.keras import WandbMetricsLogger, WandbModelCheckpoint
@@ -34,7 +34,8 @@ if gpus:
 # ==================================================
 
 # Configuration
-CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_split_5min_1fps_petite/'
+# CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_split_5min_1fps_petite/'
+CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_4134/'
 CONFIG_NAME = 'default'
 
 # =========== LOAD TRAINING/VAL/TEST DATA ==========
@@ -42,7 +43,7 @@ print("Loading clips...")
 data = load_training_data(
     CLIPS_OUTPUT_DIR,
     framerate=1,
-    greyscale=False
+    greyscale=False, #TODO change this?
 )
 
 x_train, y_train = data['train']
@@ -76,52 +77,49 @@ print(f"Test label distribution: {test_dist}")
 # Load SIPEC config
 config = load_config(f"configs/behavior/{CONFIG_NAME}")
 
-# CRITICAL: Fix string booleans from config file
+# Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
-config['train_sequential_model'] = True  # Force boolean
-
-config['recognition_model_use_scheduler'] = False  # Force boolean
-config['use_class_weights'] = True  # Force boolean
-
-# Image dimensions
-config['image_x'] = 200
-config['image_y'] = 200
-
-# Core parameters
-config['num_classes'] = 4
-config['normalize_data'] = True
-config['encode_labels'] = True
-config['look_back'] = 10
-config['use_generator'] = True
-config['do_flow'] = False
-config['undersample_data'] = False
-
-# Model architecture
-# config['backbone'] = 'xception'
-config['backbone'] = 'mobilenet'
-    
-# Recognition model parameters
-config['recognition_model_optimizer'] = 'adam'
-config['recognition_model_lr'] = 0.0001
-config['recognition_model_epochs'] = 1
+config['recognition_model_lr'] = 1e-5
+config['recognition_model_epochs'] = 20
 config['recognition_model_batch_size'] = 16
+config['backbone'] = 'mobilenet'
+# config['backbone'] = 'xception'
+config['recognition_model_optimizer'] = 'adam'
+
+
+# Sequential Model Parameters
+config['train_sequential_model'] = True  # Force boolean
 config['recognition_model_fix'] = True
 config['recognition_model_remove_classification'] = True
-config['recognition_model_augmentation'] = 2 # 0-3 levels
 
-# Scheduler parameters
-config['recognition_model_scheduler_lr'] = 0.0001  # Initial LR for scheduler
-config['recognition_model_scheduler_factor'] = 1.1  # Division factor per epoch
-config['recognition_model_scheduler_lower_lr'] = 0.0000001  # Minimum LR
-
-# Sequential model parameters (needed even if not training sequential)
+config['sequential_model_lr'] = 0.0001
+config['sequential_model_epochs'] = 50
+config['sequential_model_batch_size'] = 16
 config['sequential_backbone'] = 'lstm'
 config['sequential_model_optimizer'] = 'adam'
-config['sequential_model_lr'] = 0.0001
-config['sequential_model_use_scheduler'] = False
-config['sequential_model_epochs'] = 1
-config['sequential_model_batch_size'] = 16
+config['look_back'] = 5
 config["temporal_causal"] = False # personally created parameter --> used in SwissKnife/behavior.py
+
+# Data Parameters
+config['num_classes'] = 4
+config['undersample_data'] = False
+config['recognition_model_augmentation'] = 3 # 0-3 levels
+config['use_class_weights'] = True  # Force boolean
+config['normalize_data'] = True
+config['encode_labels'] = True
+config['use_generator'] = True
+config['do_flow'] = False
+config['image_x'] = 200 # not really used
+config['image_y'] = 200 # not really used
+
+# Scheduler (Not really used but required)
+config['recognition_model_use_scheduler'] = False  # Force boolean
+config['sequential_model_use_scheduler'] = False
+config['recognition_model_scheduler_lr'] = config['recognition_model_lr']#0.0001  # Initial LR for scheduler
+config['recognition_model_scheduler_factor'] = 1 #1.1  # Division factor per epoch
+config['recognition_model_scheduler_lower_lr'] = 0.0000001  # Minimum LR
+
+
 # ========================================================
 
 # ================= WANDB INITIAL LOGGING ========================
