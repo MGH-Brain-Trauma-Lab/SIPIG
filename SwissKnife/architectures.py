@@ -678,9 +678,22 @@ def recurrent_model_lstm(recognition_model, input_shape, classes):
     
     # Apply feature extraction
     sequential_model_helper = Lambda(extract_features)(input_sequences)
+
+    # ++++++++++ dropout ++++++++++
+    sequential_model_helper = LSTM(
+        128, 
+        return_sequences=False,
+        dropout=0.3,              # ← Add input dropout
+        recurrent_dropout=0.2     # ← Add recurrent dropout
+    )(sequential_model_helper)
     
-    # LSTM layer
-    sequential_model_helper = LSTM(128, return_sequences=False)(sequential_model_helper)
+    # Add dropout before output
+    sequential_model_helper = Dropout(0.3)(sequential_model_helper)  # ← Add this
+    # +++++++++++++++++++++++++++++
+    # -----------------------------
+#     # LSTM layer
+#     sequential_model_helper = LSTM(128, return_sequences=False)(sequential_model_helper)
+    # -----------------------------
     
     # Output layer
     sequential_model_prediction = Dense(classes, activation="softmax")(sequential_model_helper)
