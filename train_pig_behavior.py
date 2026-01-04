@@ -80,12 +80,15 @@ config = load_config(f"configs/behavior/{CONFIG_NAME}")
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
 config['recognition_model_lr'] = 1e-5
-config['recognition_model_epochs'] = 20
+config['recognition_model_epochs'] = 1
 config['recognition_model_batch_size'] = 16
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
 config['recognition_model_optimizer'] = 'adam'
 
+# Pretrained Recognition Model Parameters
+config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints/encoder_epoch_90.h5'
+config['freeze_pretrained'] = False  # Freeze backbone, only train classification head
 
 # Sequential Model Parameters
 config['train_sequential_model'] = True  # Force boolean
