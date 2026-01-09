@@ -16,6 +16,32 @@ import seaborn as sns
 from sklearn import metrics
 import tensorflow as tf
 import os
+import random
+
+# =========== SET SEED ==========
+SEED = None  # Change this to whatever you want, or set to None for random
+# SEED = None  # Uncomment this line for random seed
+
+if SEED is None:
+    SEED = random.randint(0, 999999)
+    print(f"\n{'='*80}")
+    print(f"USING RANDOM SEED: {SEED}")
+    print(f"{'='*80}\n")
+else:
+    print(f"\n{'='*80}")
+    print(f"USING FIXED SEED: {SEED}")
+    print(f"{'='*80}\n")
+
+# Set all random seeds
+os.environ['PYTHONHASHSEED'] = str(SEED)
+random.seed(SEED)
+np.random.seed(SEED)
+tf.random.set_seed(SEED)
+
+# For additional reproducibility with GPU operations
+os.environ['TF_DETERMINISTIC_OPS'] = '1'
+os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+# ==================================================
 
 # =========== ALLOW GPU GROWTH (allows for more gpu use) ==========
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
@@ -35,7 +61,8 @@ if gpus:
 
 # Configuration
 # CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_split_5min_1fps_petite/'
-CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_4134/'
+#CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_4134/'
+CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_jan6_max154/'
 CONFIG_NAME = 'default'
 
 # =========== LOAD TRAINING/VAL/TEST DATA ==========
@@ -80,14 +107,15 @@ config = load_config(f"configs/behavior/{CONFIG_NAME}")
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
 config['recognition_model_lr'] = 1e-5
-config['recognition_model_epochs'] = 1
+config['recognition_model_epochs'] = 15
 config['recognition_model_batch_size'] = 16
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
 config['recognition_model_optimizer'] = 'adam'
+config['recognition_model_loss'] = 'focal_loss'
 
 # Pretrained Recognition Model Parameters
-config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints/encoder_epoch_90.h5'
+config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5'
 config['freeze_pretrained'] = False  # Freeze backbone, only train classification head
 
 # Sequential Model Parameters
@@ -96,12 +124,13 @@ config['recognition_model_fix'] = True
 config['recognition_model_remove_classification'] = True
 
 config['sequential_model_lr'] = 0.0001
-config['sequential_model_epochs'] = 50
+config['sequential_model_epochs'] = 10
 config['sequential_model_batch_size'] = 16
 config['sequential_backbone'] = 'lstm'
 config['sequential_model_optimizer'] = 'adam'
 config['look_back'] = 5
 config["temporal_causal"] = False # personally created parameter --> used in SwissKnife/behavior.py
+config['sequential_model_loss'] = 'focal_loss'
 
 # Data Parameters
 config['num_classes'] = 4
@@ -132,6 +161,7 @@ wandb.init(
     config={
         **config,  # Unpack all config items
         # Add computed statistics
+        "seed": SEED, 
         "dataset": CLIPS_OUTPUT_DIR.split('/')[-2],
         "train_samples": len(y_train),
         "val_samples": len(y_val),
@@ -173,33 +203,6 @@ for key in ['train_recognition_model', 'use_class_weights', 'recognition_model_u
 
 # print(f"After oversampling: {Counter(y_train)}")
 # ==========================================================
-
-# ============ ADD PRE-LOADER AUGMENTATION HERE ============
-# standard augmentation doesn't work with sequential's TimeDistributed wrapper,
-# so move the augmentations to occur before running the model
-
-# from SwissKnife.augmentations import mouse_identification
-# from tqdm import tqdm
-
-# print("Applying augmentation to training data...")
-# level = config['recognition_model_augmentation']
-
-# if level > 0:
-#     augmentation = mouse_identification(level=level)
-#     config['recognition_model_augmentation'] = 0 # turn it off since we are doing augmentation here
-
-#     # Augment training data
-#     x_train_augmented = []
-#     for img in tqdm(x_train, desc="Augmenting training data"):
-#         aug_img = augmentation(image=img)
-#         x_train_augmented.append(aug_img)
-#     x_train = np.array(x_train_augmented)
-# else:
-#     print('Augmentation level 0: No augmentation being performed')
-
-# # DON'T augment validation/test data!
-# print("Augmentation complete!")
-# ===============================================
 
 # ================= DATA LOADER =================
 # Create SIPEC dataloader with appropriate validation data
@@ -357,9 +360,10 @@ plt.close(fig)
 
 # Save model
 now = datetime.now().strftime("%m-%d-%Y_%HH-%MM-%SS")
-name = f'pig_behavior_model_{now}.h5'
+name = f'pig_behavior_model_{now}_seed{SEED}.h5'
 model.recognition_model.save(name)
 print(f"\nModel saved to: {name}")
+print(f"Seed used: {SEED}")
 
 # Save model as wandb artifact
 artifact = wandb.Artifact(
