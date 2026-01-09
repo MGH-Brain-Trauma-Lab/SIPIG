@@ -37,7 +37,6 @@ def train_behavior(
     num_classes,
     encode_labels=True,
     class_weights=None,
-    # results_sink=results_sink,
 ):
     print("data prepared!")
 
@@ -48,6 +47,8 @@ def train_behavior(
         dataloader.get_input_shape(),
         num_classes,
         skip_layers=True,
+        pretrained_weights_path=config.get("pretrained_weights_path", None),
+        freeze_pretrained=config.get("freeze_pretrained", False),
     )
 
     our_model.set_class_weight(class_weights)

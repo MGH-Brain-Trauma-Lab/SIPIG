@@ -706,27 +706,96 @@ def recurrent_model_lstm(recognition_model, input_shape, classes):
 
 # TODO: adaptiv size
 def pretrained_recognition(
-    model_name, input_shape, num_classes, skip_layers=False
+    model_name, input_shape, num_classes, skip_layers=False, 
+    pretrained_weights_path=None, freeze_pretrained=False
 ):
     """This returns the model architecture for a model that operates on images and is pretrained with imagenet weights.
     This architecture is used for IdNet and BehaviorNet as backbone in SIPEC and is referred to as RecognitionNet.
 
     Parameters
     ----------
-    model_name : keras.model
+    model_name : str
         Name of the pretrained recognition model to use (names include: "xception, "resnet", "densenet")
     input_shape : np.ndarray - (Time, Width, Height, Channels)
         Shape of the images over time.
     num_classes : int
         Number of behaviors to recognise.
-    fix_layers : bool
-        Recurrent dropout factor to use.
+    skip_layers : bool
+        Whether to skip initial layers
+    pretrained_weights_path : str, optional
+        Path to custom pretrained weights (.h5 file). If provided, loads these weights instead of ImageNet.
+        Can be SimCLR weights, your own pretrained model, or any compatible weights.
+    freeze_pretrained : bool
+        Whether to freeze the pretrained backbone layers (only train classification head)
 
     Returns
     -------
     keras.model
         RecognitionNet
     """
+    
+    # === LOAD CUSTOM PRETRAINED WEIGHTS IF PROVIDED ===
+    if pretrained_weights_path is not None:
+        import os
+        if os.path.exists(pretrained_weights_path):
+            print(f"\n{'='*80}")
+            print(f"Loading custom pretrained weights from: {pretrained_weights_path}")
+            print(f"Freeze backbone: {freeze_pretrained}")
+            print(f"{'='*80}\n")
+            
+            import tensorflow as tf
+            try:
+                # Load the pretrained model
+                pretrained_model = tf.keras.models.load_model(pretrained_weights_path, compile=False)
+                
+                # The pretrained model might be just the backbone or include classification layers
+                # We'll use it as the backbone and add our own classification head
+                
+                # Check if it has a classification layer we should remove
+                # (models typically end with Dense layer for classification)
+                if isinstance(pretrained_model.layers[-1], tf.keras.layers.Dense):
+                    print("Removing classification head from pretrained model...")
+                    # Get the backbone (everything except last layers)
+                    backbone = tf.keras.Model(
+                        inputs=pretrained_model.input,
+                        outputs=pretrained_model.layers[-3].output  # Before Dense->Activation
+                    )
+                else:
+                    # It's just a backbone, use as-is
+                    backbone = pretrained_model
+                
+                # Freeze backbone if requested
+                if freeze_pretrained:
+                    for layer in backbone.layers:
+                        layer.trainable = False
+                    print(f"✓ Froze {len(backbone.layers)} backbone layers")
+                
+                # Build the full recognition model with our classification head
+                new_input = Input(
+                    batch_shape=(None, input_shape[0], input_shape[1], input_shape[2])
+                )
+                
+                x = Conv2D(3, kernel_size=(1, 1), strides=(1, 1))(new_input)
+                x = backbone(x)
+                x = BatchNormalization()(x)
+                x = Dropout(0.25)(x)
+                x = Dense(num_classes)(x)
+                x = Activation("softmax")(x)
+                
+                recognition_model = Model(inputs=new_input, outputs=x)
+                recognition_model.summary()
+                
+                return recognition_model
+                
+            except Exception as e:
+                print(f"ERROR loading pretrained weights: {e}")
+                print("Falling back to ImageNet weights...\n")
+                pretrained_weights_path = None  # Fall through to standard loading
+        else:
+            print(f"WARNING: Pretrained weights not found at {pretrained_weights_path}")
+            print("Falling back to ImageNet weights...\n")
+            pretrained_weights_path = None
+            
     if model_name == "xception":
         #TODO: fixme generetic input shape adaptation
         recognition_model = Xception(
