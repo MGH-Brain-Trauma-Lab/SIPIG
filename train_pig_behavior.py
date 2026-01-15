@@ -59,10 +59,16 @@ if gpus:
         print(e)
 # ==================================================
 
+# =============== LOWER PRECISION needed for larger images ===================== 
+# from tensorflow.keras import mixed_precision
+# policy = mixed_precision.Policy('mixed_float16')
+# mixed_precision.set_global_policy(policy)
+# ==================================================
+
 # Configuration
-# CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_split_5min_1fps_petite/'
-#CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_4134/'
-CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_jan6_max154/'
+# CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_extraction/temporal_split_5min_1fps_petite/'
+CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_topview_200/'
+#CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_jan6_max154_lying/'
 CONFIG_NAME = 'default'
 
 # =========== LOAD TRAINING/VAL/TEST DATA ==========
@@ -106,26 +112,26 @@ config = load_config(f"configs/behavior/{CONFIG_NAME}")
 
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
-config['recognition_model_lr'] = 1e-5
-config['recognition_model_epochs'] = 15
-config['recognition_model_batch_size'] = 16
+config['recognition_model_lr'] = 3e-5
+config['recognition_model_epochs'] = 50
+config['recognition_model_batch_size'] = 4
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
 config['recognition_model_optimizer'] = 'adam'
 config['recognition_model_loss'] = 'focal_loss'
 
 # Pretrained Recognition Model Parameters
-config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5'
+# config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5'
 config['freeze_pretrained'] = False  # Freeze backbone, only train classification head
 
 # Sequential Model Parameters
-config['train_sequential_model'] = True  # Force boolean
+config['train_sequential_model'] = False  # Force boolean
 config['recognition_model_fix'] = True
 config['recognition_model_remove_classification'] = True
 
 config['sequential_model_lr'] = 0.0001
 config['sequential_model_epochs'] = 10
-config['sequential_model_batch_size'] = 16
+config['sequential_model_batch_size'] = 8
 config['sequential_backbone'] = 'lstm'
 config['sequential_model_optimizer'] = 'adam'
 config['look_back'] = 5
@@ -212,8 +218,8 @@ dataloader = Dataloader(x_train, y_train, x_val, y_val, config=config)
 # Prepare data
 print("Preparing data...")
 dataloader.prepare_data(
-    downscale=(75, 75),
-#     downscale=(200, 200),
+#     downscale=(75, 75),
+    downscale=(200, 200),
     remove_behaviors=[],
     flatten=False,
     recurrent=False
