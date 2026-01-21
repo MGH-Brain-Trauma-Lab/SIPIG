@@ -58,39 +58,12 @@ def train_behavior(
         augmentation = mouse_identification(level=config["recognition_model_augmentation"])
         our_model.set_augmentation(augmentation)
         print(f"Using augmentation level {config['recognition_model_augmentation']}")
-    
-    our_model.set_optimizer(
-        config["recognition_model_optimizer"],
-        lr=config["recognition_model_lr"],
-    )
-    if config["recognition_model_use_scheduler"]:
-        our_model.scheduler_lr = config["recognition_model_scheduler_lr"]
-        our_model.scheduler_factor = config["recognition_model_scheduler_factor"]
-        our_model.set_lr_scheduler()
-    else:
-        # use standard training callback
-        CB_es, CB_lr = callbacks_learningRate_plateau()
-        our_model.add_callbacks([CB_es, CB_lr])
-
-    # add sklearn metrics for tracking in training
-    #my_metrics = Metrics(validation_data=(dataloader.x_test, dataloader.y_test))
-    my_metrics = Metrics(
-        validation_data=(dataloader.x_test, dataloader.y_test),
-        class_names=dataloader.label_encoder.classes_
-    )
-    my_metrics.setModel(our_model.recognition_model)
-    our_model.add_callbacks([my_metrics])
-
-    try:
-        from wandb.integration.keras import WandbMetricsLogger
-        wandb_callback = WandbMetricsLogger(
-            log_freq='epoch'
-        )
-        our_model.add_callbacks([wandb_callback])
-    except ImportError:
-        print("WandB not available, skipping callback")
 
     if config["train_recognition_model"]:
+        # ============ INITIALIZE VALIDATION SUBSET WITH DEFAULTS ============
+        x_val_subset = dataloader.x_test if hasattr(dataloader, 'x_test') else None
+        y_val_subset = dataloader.y_test if hasattr(dataloader, 'y_test') else None
+        
         # ============ SETUP GENERATORS ============
         if dataloader.config["use_generator"]:
             if dataloader.streaming_mode:
@@ -162,18 +135,15 @@ def train_behavior(
                 # Use full validation data for metrics
                 x_val_subset = dataloader.x_test
                 y_val_subset = dataloader.y_test
-        else:
-            # Not using generator - use full data
-            x_val_subset = dataloader.x_test
-            y_val_subset = dataloader.y_test
 
         # ============ SETUP METRICS CALLBACK ============
-        my_metrics = Metrics(
-            validation_data=(x_val_subset, y_val_subset),
-            class_names=dataloader.label_encoder.classes_
-        )
-        my_metrics.setModel(our_model.recognition_model)
-        our_model.add_callbacks([my_metrics])
+        if x_val_subset is not None and y_val_subset is not None:
+            my_metrics = Metrics(
+                validation_data=(x_val_subset, y_val_subset),
+                class_names=dataloader.label_encoder.classes_
+            )
+            my_metrics.setModel(our_model.recognition_model)
+            our_model.add_callbacks([my_metrics])
 
         # ============ REST OF TRAINING SETUP ============
         try:
@@ -182,6 +152,7 @@ def train_behavior(
             our_model.add_callbacks([wandb_callback])
         except ImportError:
             print("WandB not available, skipping callback")
+            
         # ============ SETUP OPTIMIZER & SCHEDULER ============
         our_model.set_optimizer(
             config["recognition_model_optimizer"],
@@ -206,6 +177,10 @@ def train_behavior(
         
     # ==================== SEQUENTIAL MODEL TRAINING ====================
     if config["train_sequential_model"]:
+        # ============ INITIALIZE VALIDATION SUBSET WITH DEFAULTS ============
+        x_val_subset = dataloader.x_test_recurrent if hasattr(dataloader, 'x_test_recurrent') else None
+        y_val_subset = dataloader.y_test_recurrent if hasattr(dataloader, 'y_test_recurrent') else None
+        
         # ============ SETUP GENERATORS ============
         if dataloader.config["use_generator"]:
             if dataloader.streaming_mode:
@@ -310,12 +285,13 @@ def train_behavior(
         )
 
         # ============ SETUP METRICS CALLBACK ============
-        my_metrics = Metrics(
-            validation_data=(x_val_subset, y_val_subset),
-            class_names=dataloader.label_encoder.classes_
-        )
-        my_metrics.setModel(our_model.sequential_model)
-        our_model.add_callbacks([my_metrics])
+        if x_val_subset is not None and y_val_subset is not None:
+            my_metrics = Metrics(
+                validation_data=(x_val_subset, y_val_subset),
+                class_names=dataloader.label_encoder.classes_
+            )
+            my_metrics.setModel(our_model.sequential_model)
+            our_model.add_callbacks([my_metrics])
 
         # ============ SETUP OPTIMIZER & SCHEDULER ============
         our_model.set_optimizer(

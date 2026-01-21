@@ -106,10 +106,10 @@ train_dist = Counter(y_train)
 print(f"\nTrain label distribution: {train_dist}")
 
 # +++++++++ COMBINE LYING INTO ONE CATEGORY +++++++++
-# y_train = ['lying' if 'lying' in label else label for label in y_train]
-# y_test = ['lying' if 'lying' in label else label for label in y_test]
-# if y_val is not None:
-#     y_val = ['lying' if 'lying' in label else label for label in y_val]
+y_train = ['lying' if 'lying' in label else label for label in y_train]
+y_test = ['lying' if 'lying' in label else label for label in y_test]
+if y_val is not None:
+    y_val = ['lying' if 'lying' in label else label for label in y_val]
 # NOTE: Also need to change num_classes to 3
 # ++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -133,21 +133,22 @@ config['use_generator'] = True  # Must be True for streaming
 IMG_DIM = 200
 config['image_x'] = IMG_DIM
 config['image_y'] = IMG_DIM
-config['num_classes'] = 4
+config['num_classes'] = 3
+
+# Pretrained Recognition Model Parameters
+# config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5'
+config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug_200/encoder_epoch_100.h5'
+config['freeze_pretrained'] = False  # Freeze backbone, only train classification head
 
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
 config['recognition_model_lr'] = 3e-5
 config['recognition_model_epochs'] = 50
-config['recognition_model_batch_size'] = 16
+config['recognition_model_batch_size'] = 64
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
 config['recognition_model_optimizer'] = 'adam'
 config['recognition_model_loss'] = 'focal_loss'
-
-# Pretrained Recognition Model Parameters
-# config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5'
-config['freeze_pretrained'] = False  # Freeze backbone, only train classification head
 
 # Sequential Model Parameters
 config['train_sequential_model'] = False  # Force boolean
@@ -351,9 +352,28 @@ wandb.log({
 })
 
 # Get predictions to calculate per-class metrics
-val_predictions = model.recognition_model.predict(dataloader.x_test)
-val_pred_labels = np.argmax(val_predictions, axis=-1)
-val_true_labels = np.argmax(dataloader.y_test, axis=-1)
+if USE_STREAMING:
+    # Load validation subset from generator
+    print("Loading validation data for final evaluation...")
+    val_batches = min(10, len(dataloader.validation_generator))
+    val_x = []
+    val_y = []
+    for i in range(val_batches):
+        batch_x, batch_y = dataloader.validation_generator[i]
+        val_x.append(batch_x)
+        val_y.append(batch_y)
+    
+    val_x = np.concatenate(val_x, axis=0)
+    val_y = np.concatenate(val_y, axis=0)
+    
+    val_predictions = model.recognition_model.predict(val_x)
+    val_pred_labels = np.argmax(val_predictions, axis=-1)
+    val_true_labels = np.argmax(val_y, axis=-1)
+else:
+    # Traditional mode - use full validation data
+    val_predictions = model.recognition_model.predict(dataloader.x_test)
+    val_pred_labels = np.argmax(val_predictions, axis=-1)
+    val_true_labels = np.argmax(dataloader.y_test, axis=-1)
 
 # Parse classification report for per-class metrics
 report_dict = metrics.classification_report(
