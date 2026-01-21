@@ -14,6 +14,8 @@ from sklearn.utils import class_weight
 from tensorflow import keras
 from tqdm import tqdm
 
+import tensorflow as tf
+
 
 # adapted from https://stanford.edu/~shervine/blog/keras-how-to-generate-data-on-the-fly
 class DataGenerator(keras.utils.Sequence):
@@ -123,43 +125,51 @@ def create_dataset(dataset, look_back=5, oneD=False):
 
 
 class Dataloader:
-
-    # FIXME: for now just pass
-    def __init__(
-        self,
-        x_train,
-        y_train,
-        x_test,
-        y_test,
-        config,
-        with_dlc=False,
-        dlc_train=None,
-        dlc_test=None,
-    ):
-
+    def __init__(self, x_train, y_train, x_test, y_test, config=None):
         """
         Args:
-            x_train:
-            y_train:
-            x_test:
-            y_test:
-            look_back:
-            with_dlc:
-            dlc_train:
-            dlc_test:
+            x_train: Either numpy array of images OR list of file paths (for streaming)
+            y_train: Labels for training data
+            x_test: Either numpy array of images OR list of file paths (for streaming)
+            y_test: Labels for test/validation data
+            config: Configuration dictionary
         """
-        self.with_dlc = with_dlc
-        self.dlc_train = dlc_train
-        self.dlc_test = dlc_test
-        self.x_train = x_train
+        # Detect if we're in streaming mode (paths vs data)
+        self.streaming_mode = False
+        if isinstance(x_train, (list, np.ndarray)) and len(x_train) > 0:
+            if isinstance(x_train[0], str):
+                # Streaming mode - we have file paths
+                self.streaming_mode = True
+                self.train_paths = list(x_train)
+                self.val_paths = list(x_test)
+                self.train_labels_raw = list(y_train)
+                self.val_labels_raw = list(y_test)
+                self.x_train = None  # Don't load into memory
+                self.x_test = None
+                print("Dataloader initialized in STREAMING mode (paths only)")
+            else:
+                # Traditional mode - we have actual data
+                self.x_train = x_train
+                self.x_test = x_test
+                self.streaming_mode = False
+                print("Dataloader initialized in TRADITIONAL mode (data in memory)")
+        else:
+            self.x_train = x_train
+            self.x_test = x_test
+            self.streaming_mode = False
+        
         self.y_train = y_train
-        self.x_test = x_test
         self.y_test = y_test
-
-        self.config = config
-        self.num_classes = len(np.unique(y_train))
-
-        self.look_back = self.config["look_back"]
+        
+        # Rest of the original __init__ code stays the same
+        self.config = config if config else {}
+        self.look_back = self.config.get("look_back", 1)
+        
+        # Initialize other attributes
+        self.training_generator = None
+        self.validation_generator = None
+        self.label_encoder = None
+        self.num_classes = None
 
         self.label_encoder = None
 
@@ -464,33 +474,25 @@ class Dataloader:
 
     def get_input_shape(self, recurrent=False):
         """
-        Args:
-            recurrent:
+        Get input shape for model architecture.
+        Works in both streaming and traditional modes.
         """
-
-        try:
-            rec_shape = self.x_train_recurrent.shape[1]
-        except AttributeError:
-            rec_shape = int(2 * self.look_back)
-        if recurrent:
-            input_shape = (
-                # new version here:
-                rec_shape,
-                self.x_train.shape[1],
-                self.x_train.shape[2],
-                self.x_train.shape[3],
-            )
-            return input_shape
+        if self.streaming_mode:
+            # In streaming mode, use target_size from config
+            height = self.target_size[0] if hasattr(self, 'target_size') else 200
+            width = self.target_size[1] if hasattr(self, 'target_size') else 200
+            channels = 3
+            if recurrent:
+                return (self.look_back * 2, height, width, channels)
+            return (height, width, channels)
         else:
-            if len(self.x_train.shape) == 5:
-                img_rows, img_cols = self.x_train.shape[2], self.x_train.shape[3]
-                input_shape = (img_rows, img_cols, self.x_train.shape[4])
-                return input_shape
-            if len(self.x_train.shape) == 4:
-                img_rows, img_cols = self.x_train.shape[1], self.x_train.shape[2]
-                input_shape = (img_rows, img_cols, self.x_train.shape[3])
-                return input_shape
-            raise NotImplementedError
+            # Traditional mode - use actual data shape
+            if recurrent:
+                if hasattr(self, 'x_train_recurrent') and self.x_train_recurrent is not None:
+                    return self.x_train_recurrent.shape[1:]
+            if self.x_train is not None:
+                return self.x_train.shape[1:]
+            return (200, 200, 3)  # Default fallback
 
     # TODO: parallelize
     def downscale_frames(self, factor=0.5):
@@ -607,3 +609,315 @@ class Dataloader:
 
     def get_num_classes(self):
         return self.num_classes
+    
+    def prepare_streaming_data(self, target_size=(200, 200)):
+        """
+        Prepare data for streaming mode - only encodes labels.
+        Does NOT load images into memory.
+        
+        Args:
+            target_size: Target image size (used by generator, not here)
+        """
+        if not self.streaming_mode:
+            raise ValueError("prepare_streaming_data() only works in streaming mode")
+        
+        print("Preparing streaming data (encoding labels only)...")
+        
+        # Store target size for generators
+        self.target_size = target_size
+        
+        # Encode labels
+        from sklearn import preprocessing
+        self.label_encoder = preprocessing.LabelEncoder()
+        all_labels = self.train_labels_raw + self.val_labels_raw
+        self.label_encoder.fit(all_labels)
+        self.num_classes = len(self.label_encoder.classes_)
+        
+        print(f"Classes: {self.label_encoder.classes_}")
+        print(f"Number of classes: {self.num_classes}")
+        
+        # Store for compatibility
+        self.y_train = self.label_encoder.transform(self.train_labels_raw)
+        self.y_test = self.label_encoder.transform(self.val_labels_raw)
+
+    
+# =====================================================================
+# STREAMING DATA GENERATOR (for memory-efficient training)
+# =====================================================================
+
+import cv2
+
+class StreamingDataGenerator(tf.keras.utils.Sequence):
+    """
+    Generator that loads clips from disk on-demand.
+    Memory efficient - only loads one batch at a time.
+    Supports both single-frame (recognition) and sequential (LSTM) modes.
+    """
+    
+    def __init__(
+        self, 
+        clip_paths, 
+        labels, 
+        label_encoder,
+        num_classes,
+        batch_size=16, 
+        target_size=(200, 200),
+        shuffle=True,
+        augmentation=None,
+        normalize=True,
+        mode='recognition',  # NEW: 'recognition' or 'sequential'
+        look_back=5,  # NEW: for sequential mode
+        temporal_causal=False  # NEW: for sequential mode
+    ):
+        """
+        Args:
+            clip_paths: List of file paths to video/image files
+            labels: List of string labels corresponding to clips
+            label_encoder: sklearn LabelEncoder for encoding labels
+            num_classes: Number of classes
+            batch_size: Batch size
+            target_size: (height, width) to resize frames to
+            shuffle: Whether to shuffle at end of epoch
+            augmentation: Optional augmentation function
+            normalize: Whether to normalize to [0, 1]
+            mode: 'recognition' (single frame) or 'sequential' (frame sequences)
+            look_back: Number of frames before/after center frame for sequential mode
+            temporal_causal: If True, only use past frames in sequential mode
+        """
+        self.clip_paths = np.array(clip_paths)
+        self.labels = labels
+        self.label_encoder = label_encoder
+        self.num_classes = num_classes
+        self.batch_size = batch_size
+        self.target_size = target_size
+        self.shuffle = shuffle
+        self.augmentation = augmentation
+        self.normalize = normalize
+        self.mode = mode
+        self.look_back = look_back
+        self.temporal_causal = temporal_causal
+        
+        # Encode labels
+        self.encoded_labels = label_encoder.transform(labels)
+        
+        # Create indices for shuffling
+        self.indices = np.arange(len(self.clip_paths))
+        if self.shuffle:
+            np.random.shuffle(self.indices)
+    
+    def __len__(self):
+        """Number of batches per epoch"""
+        return int(np.ceil(len(self.clip_paths) / self.batch_size))
+    
+    def _load_frame_from_path(self, path, frame_idx=None):
+        """
+        Load a single frame from various file types.
+        
+        Args:
+            path: File path
+            frame_idx: For videos, which frame to extract (None = random/middle)
+        
+        Returns:
+            frame as numpy array (H, W, C)
+        """
+        if path.endswith('.npy'):
+            # Load numpy array (single frame)
+            frame = np.load(path)
+        
+        elif path.endswith(('.jpg', '.jpeg', '.png', '.bmp')):
+            # Load image file
+            frame = cv2.imread(path)
+            if frame is None:
+                raise ValueError(f"Could not load image: {path}")
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        elif path.endswith(('.mp4', '.avi', '.mov')):
+            # Load frame from video
+            cap = cv2.VideoCapture(path)
+            if not cap.isOpened():
+                raise ValueError(f"Could not open video: {path}")
+            
+            # Get total frames
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            
+            if total_frames == 0:
+                cap.release()
+                raise ValueError(f"Video has no frames: {path}")
+            
+            # Determine which frame to read
+            if frame_idx is not None:
+                # Use specified frame index
+                use_frame_idx = min(frame_idx, total_frames - 1)
+            elif self.shuffle and self.mode == 'recognition':
+                # Random frame for training
+                use_frame_idx = np.random.randint(0, total_frames)
+            else:
+                # Middle frame for validation or as default
+                use_frame_idx = total_frames // 2
+            
+            # Seek to frame
+            cap.set(cv2.CAP_PROP_POS_FRAMES, use_frame_idx)
+            
+            ret, frame = cap.read()
+            cap.release()
+            
+            if not ret:
+                raise ValueError(f"Could not read frame {use_frame_idx} from video: {path}")
+            
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        else:
+            raise ValueError(f"Unsupported file type: {path}")
+        
+        return frame
+    
+    def _load_sequence_from_video(self, path):
+        """
+        Load a sequence of frames from a video for sequential models.
+        
+        Args:
+            path: Video file path
+        
+        Returns:
+            sequence of frames: (timesteps, H, W, C)
+        """
+        cap = cv2.VideoCapture(path)
+        if not cap.isOpened():
+            raise ValueError(f"Could not open video: {path}")
+        
+        # Get total frames
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        
+        if total_frames == 0:
+            cap.release()
+            raise ValueError(f"Video has no frames: {path}")
+        
+        # Determine sequence parameters
+        if self.temporal_causal:
+            # Only past frames: need look_back*2 frames total
+            required_frames = self.look_back * 2
+        else:
+            # Past and future: need look_back*2 frames (look_back before + look_back after)
+            required_frames = self.look_back * 2
+        
+        # Pick a center frame
+        if self.shuffle and self.mode == 'sequential':
+            # Random center frame (but ensure we have enough frames around it)
+            min_center = self.look_back if not self.temporal_causal else required_frames
+            max_center = total_frames - self.look_back
+            if max_center <= min_center:
+                center_frame = total_frames // 2
+            else:
+                center_frame = np.random.randint(min_center, max_center)
+        else:
+            # Use middle frame
+            center_frame = total_frames // 2
+        
+        # Determine frame indices to extract
+        if self.temporal_causal:
+            # Only past frames
+            start_frame = max(0, center_frame - required_frames)
+            end_frame = center_frame
+        else:
+            # Past and future frames
+            start_frame = max(0, center_frame - self.look_back)
+            end_frame = min(total_frames, center_frame + self.look_back)
+        
+        # Extract frames
+        sequence = []
+        for frame_idx in range(start_frame, end_frame):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            
+            if ret:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                sequence.append(frame)
+        
+        cap.release()
+        
+        # Pad sequence if needed (in case video is too short)
+        while len(sequence) < required_frames:
+            if len(sequence) > 0:
+                sequence.append(sequence[-1])  # Repeat last frame
+            else:
+                # Create black frame if video was completely empty
+                sequence.append(np.zeros((480, 640, 3), dtype=np.uint8))
+        
+        # Truncate if too long
+        sequence = sequence[:required_frames]
+        
+        return np.array(sequence)
+    
+    def __getitem__(self, idx):
+        """
+        Generate one batch of data.
+        Loads frames from video files on-demand.
+        """
+        # Get batch indices
+        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        
+        # Get paths and labels for this batch
+        batch_paths = self.clip_paths[batch_indices]
+        batch_labels = self.encoded_labels[batch_indices]
+        
+        # Load data based on mode
+        if self.mode == 'recognition':
+            # Load single frames
+            batch_frames = []
+            for path in batch_paths:
+                frame = self._load_frame_from_path(path)
+                
+                # Resize
+                if frame.shape[:2] != self.target_size:
+                    frame = cv2.resize(frame, self.target_size)
+                
+                # Apply augmentation if provided
+                if self.augmentation is not None:
+                    frame = self.augmentation(image=frame)
+                
+                # Normalize
+                if self.normalize:
+                    frame = frame.astype('float32') / 255.0
+                
+                batch_frames.append(frame)
+            
+            X = np.array(batch_frames, dtype='float32')
+        
+        elif self.mode == 'sequential':
+            # Load sequences of frames
+            batch_sequences = []
+            for path in batch_paths:
+                sequence = self._load_sequence_from_video(path)
+                
+                # Resize each frame in sequence
+                resized_sequence = []
+                for frame in sequence:
+                    if frame.shape[:2] != self.target_size:
+                        frame = cv2.resize(frame, self.target_size)
+                    
+                    # Apply augmentation if provided
+                    if self.augmentation is not None:
+                        frame = self.augmentation(image=frame)
+                    
+                    # Normalize
+                    if self.normalize:
+                        frame = frame.astype('float32') / 255.0
+                    
+                    resized_sequence.append(frame)
+                
+                batch_sequences.append(resized_sequence)
+            
+            X = np.array(batch_sequences, dtype='float32')
+        
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+        
+        # One-hot encode labels
+        y = tf.keras.utils.to_categorical(batch_labels, num_classes=self.num_classes)
+        
+        return X, y
+    
+    def on_epoch_end(self):
+        """Shuffle indices at end of each epoch"""
+        if self.shuffle:
+            np.random.shuffle(self.indices)
+            

@@ -66,27 +66,44 @@ if gpus:
 # ==================================================
 
 # Configuration
-# CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_extraction/temporal_split_5min_1fps_petite/'
-CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_topview_200/'
+#CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_extraction/temporal_split_5min_1fps_petite/'
+#CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_topview_200/'
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_jan6_max154_lying/'
+CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-14-25_200/'
 CONFIG_NAME = 'default'
+USE_STREAMING = True  # ← TOGGLE THIS to switch modes
 
 # =========== LOAD TRAINING/VAL/TEST DATA ==========
-print("Loading clips...")
-data = load_training_data(
-    CLIPS_OUTPUT_DIR,
-    framerate=1,
-    greyscale=False, #TODO change this?
-)
-
-x_train, y_train = data['train']
-x_val, y_val = data['val']
-x_test, y_test = data['test']
+if USE_STREAMING:
+    print("Loading clip metadata (streaming mode)...")
+    from SwissKnife.clip_loader import load_training_metadata
     
-print(f"\nData loaded:")
-print(f"  Train: {x_train.shape}, labels: {len(y_train)}")
-print(f"  Val: {x_val.shape}, labels: {len(y_val)}")
-print(f"  Test: {x_test.shape}, labels: {len(y_test)}")
+    metadata = load_training_metadata(CLIPS_OUTPUT_DIR, framerate=1)
+    x_train, y_train = metadata['train']
+    x_val, y_val = metadata['val']
+    x_test, y_test = metadata['test']
+    
+    print(f"\nMetadata loaded:")
+    print(f"  Train: {len(x_train)} clips")
+    print(f"  Val: {len(x_val)} clips")
+    print(f"  Test: {len(x_test)} clips")
+else:
+    print("Loading all clips into memory (traditional mode)...")
+    data = load_training_data(CLIPS_OUTPUT_DIR, framerate=1, greyscale=False)
+    
+    x_train, y_train = data['train']
+    x_val, y_val = data['val']
+    x_test, y_test = data['test']
+    
+    print(f"\nData loaded:")
+    print(f"  Train: {x_train.shape}, labels: {len(y_train)}")
+    print(f"  Val: {x_val.shape}, labels: {len(y_val)}")
+    print(f"  Test: {x_test.shape}, labels: {len(y_test)}")
+
+# Check label distribution (works for both modes)
+from collections import Counter
+train_dist = Counter(y_train)
+print(f"\nTrain label distribution: {train_dist}")
 
 # +++++++++ COMBINE LYING INTO ONE CATEGORY +++++++++
 # y_train = ['lying' if 'lying' in label else label for label in y_train]
@@ -110,11 +127,19 @@ print(f"Test label distribution: {test_dist}")
 # Load SIPEC config
 config = load_config(f"configs/behavior/{CONFIG_NAME}")
 
+# Major data parameters (will crash with wrong values)
+config['use_streaming'] = USE_STREAMING  # Pass to config
+config['use_generator'] = True  # Must be True for streaming
+IMG_DIM = 200
+config['image_x'] = IMG_DIM
+config['image_y'] = IMG_DIM
+config['num_classes'] = 4
+
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
 config['recognition_model_lr'] = 3e-5
 config['recognition_model_epochs'] = 50
-config['recognition_model_batch_size'] = 4
+config['recognition_model_batch_size'] = 16
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
 config['recognition_model_optimizer'] = 'adam'
@@ -139,16 +164,12 @@ config["temporal_causal"] = False # personally created parameter --> used in Swi
 config['sequential_model_loss'] = 'focal_loss'
 
 # Data Parameters
-config['num_classes'] = 4
 config['undersample_data'] = False
 config['recognition_model_augmentation'] = 3 # 0-3 levels
 config['use_class_weights'] = True  # Force boolean
 config['normalize_data'] = True
 config['encode_labels'] = True
-config['use_generator'] = True
 config['do_flow'] = False
-config['image_x'] = 200 # not really used
-config['image_y'] = 200 # not really used
 
 # Scheduler (Not really used but required)
 config['recognition_model_use_scheduler'] = False  # Force boolean
@@ -210,20 +231,31 @@ for key in ['train_recognition_model', 'use_class_weights', 'recognition_model_u
 # print(f"After oversampling: {Counter(y_train)}")
 # ==========================================================
 
+print("\n=== DEBUG INFO ===")
+print(f"Type of x_train: {type(x_train)}")
+print(f"Length of x_train: {len(x_train)}")
+if len(x_train) > 0:
+    print(f"Type of first element: {type(x_train[0])}")
+    print(f"First element value: {x_train[0][:100] if isinstance(x_train[0], str) else 'NOT A STRING'}")
+print("==================\n")
+
 # ================= DATA LOADER =================
-# Create SIPEC dataloader with appropriate validation data
 print("\nCreating dataloader...")
 dataloader = Dataloader(x_train, y_train, x_val, y_val, config=config)
 
 # Prepare data
 print("Preparing data...")
-dataloader.prepare_data(
-#     downscale=(75, 75),
-    downscale=(200, 200),
-    remove_behaviors=[],
-    flatten=False,
-    recurrent=False
-)
+if USE_STREAMING:
+    # Streaming mode - only encode labels
+    dataloader.prepare_streaming_data(target_size=(config['image_x'], config['image_y']))
+else:
+    # Traditional mode - load and process everything
+    dataloader.prepare_data(
+        downscale=(config['image_x'], config['image_y']),
+        remove_behaviors=[],
+        flatten=False,
+        recurrent=False
+    )
 # =================================================
 
 # ================= CLASS WEIGHTS =================
