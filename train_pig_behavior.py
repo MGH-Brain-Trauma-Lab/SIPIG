@@ -143,7 +143,7 @@ config['freeze_pretrained'] = False  # Freeze backbone, only train classificatio
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
 config['recognition_model_lr'] = 3e-5
-config['recognition_model_epochs'] = 50
+config['recognition_model_epochs'] = 2
 config['recognition_model_batch_size'] = 64
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
@@ -405,9 +405,13 @@ import seaborn as sns
 cm = confusion_matrix(val_true_labels, val_pred_labels)
 
 fig, ax = plt.subplots(figsize=(10, 8))
+# sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
+#             xticklabels=['lying_asleep', 'lying_awake', 'upright', 'obstructed'],
+#             yticklabels=['lying_asleep', 'lying_awake', 'upright', 'obstructed'],
+#             ax=ax)
 sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-            xticklabels=['lying_asleep', 'lying_awake', 'upright', 'obstructed'],
-            yticklabels=['lying_asleep', 'lying_awake', 'upright', 'obstructed'],
+            xticklabels=list(set(y_val)),
+            yticklabels=list(set(y_val)),
             ax=ax)
 ax.set_xlabel('Predicted')
 ax.set_ylabel('True')
