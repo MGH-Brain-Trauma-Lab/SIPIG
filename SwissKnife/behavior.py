@@ -82,6 +82,7 @@ def train_behavior(
                     augmentation=None,
                     normalize=True,
                     mode='recognition',
+                    frames_per_video=10,
                 )
                 dataloader.validation_generator = StreamingDataGenerator(
                     clip_paths=dataloader.val_paths,
@@ -94,11 +95,12 @@ def train_behavior(
                     augmentation=None,
                     normalize=True,
                     mode='recognition',
+                    frames_per_video=1,  # ← Keep at 1 for consistent validation
                 )
 
                 # Create validation subset for metrics
                 print("Creating validation subset for metrics...")
-                val_batches_to_load = min(5, len(dataloader.validation_generator))
+                val_batches_to_load = min(10, len(dataloader.validation_generator))
                 x_val_list = []
                 y_val_list = []
 

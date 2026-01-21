@@ -667,7 +667,8 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
         normalize=True,
         mode='recognition',  # NEW: 'recognition' or 'sequential'
         look_back=5,  # NEW: for sequential mode
-        temporal_causal=False  # NEW: for sequential mode
+        temporal_causal=False,  # NEW: for sequential mode
+        frames_per_video=1,
     ):
         """
         Args:
@@ -683,6 +684,7 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
             mode: 'recognition' (single frame) or 'sequential' (frame sequences)
             look_back: Number of frames before/after center frame for sequential mode
             temporal_causal: If True, only use past frames in sequential mode
+            frames_per_video: Number of frames to sample from each video when streaming
         """
         self.clip_paths = np.array(clip_paths)
         self.labels = labels
@@ -696,10 +698,30 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
         self.mode = mode
         self.look_back = look_back
         self.temporal_causal = temporal_causal
+        self.frames_per_video = frames_per_video
         
-        # Encode labels
-        self.encoded_labels = label_encoder.transform(labels)
-        
+        if frames_per_video > 1 and mode == 'recognition':
+            print(f"Expanding dataset: {frames_per_video} frames per video")
+            expanded_paths = []
+            expanded_labels = []
+            for path, label in zip(clip_paths, labels):
+                for _ in range(frames_per_video):
+                    expanded_paths.append(path)
+                    expanded_labels.append(label)
+
+            self.clip_paths = np.array(expanded_paths)
+            self.labels = expanded_labels
+            self.label_encoder = label_encoder
+            self.encoded_labels = label_encoder.transform(expanded_labels)
+
+            print(f"Dataset expanded: {len(clip_paths)} videos → {len(self.clip_paths)} samples")
+        else:
+            # Original behavior for sequential mode or frames_per_video=1
+            self.clip_paths = np.array(clip_paths)
+            self.labels = labels
+            self.label_encoder = label_encoder
+            self.encoded_labels = label_encoder.transform(labels)
+
         # Create indices for shuffling
         self.indices = np.arange(len(self.clip_paths))
         if self.shuffle:
