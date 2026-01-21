@@ -37,6 +37,7 @@ def train_behavior(
     num_classes,
     encode_labels=True,
     class_weights=None,
+    additional_callbacks=None,
 ):
     print("data prepared!")
 
@@ -110,6 +111,10 @@ def train_behavior(
             )
         our_model.recognition_model_epochs = config["recognition_model_epochs"]
         our_model.recognition_model_batch_size = config["recognition_model_batch_size"]
+        
+        if additional_callbacks:
+            our_model.add_callbacks(additional_callbacks)
+        
         print()
         our_model.train_recognition_network(dataloader=dataloader)
         print(config)

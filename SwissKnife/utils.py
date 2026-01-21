@@ -648,7 +648,11 @@ class Metrics(tf.keras.callbacks.Callback):
     def on_train_begin(self, logs={}):
         self._data = []
 
-    def on_epoch_end(self, batch, logs={}):
+    #def on_epoch_end(self, batch, logs={}):
+    def on_epoch_end(self, batch, logs=None):
+        if logs is None:
+            logs = {}
+        
         X_val, y_val = self.validation_data[0], self.validation_data[1]
         y_val = np.argmax(y_val, axis=-1)
 
@@ -667,6 +671,10 @@ class Metrics(tf.keras.callbacks.Callback):
         from scipy.stats import pearsonr
         corr = pearsonr(y_val, y_predict)[0]
 
+        logs['val_sklearn_f1'] = f1
+        logs['val_balanced_acc'] = bal_acc
+        logs['val_pearson_corr'] = corr
+        
         self._data.append(
             {
                 "val_balanced_acc": bal_acc,
@@ -674,6 +682,11 @@ class Metrics(tf.keras.callbacks.Callback):
                 "val_pearson_corr": corr,
             }
         )
+
+        logs['val_balanced_acc'] = bal_acc
+        logs['val_sklearn_f1'] = f1  
+        logs['val_pearson_corr'] = corr
+
         print("val_balanced_acc ::: " + str(bal_acc))
         print("val_sklearn_f1 ::: " + str(f1))
         print("val_pearson_corr ::: " + str(corr))
@@ -1070,13 +1083,23 @@ def pathForFile(paths, filename):
             return path
     return "none"
 
-
+# +++++++++++ give manual input size +++++++++++++++
+def loadVideo(path, num_frames=None, greyscale=True):
+    """load the video"""
+    outputdict = {'-pix_fmt': 'gray' if greyscale else 'rgb24'}
+    if not num_frames is None:
+        return skvideo.io.vread(path, as_grey=greyscale, num_frames=num_frames, outputdict=outputdict)
+    else:
+        return skvideo.io.vread(path, as_grey=greyscale, outputdict=outputdict)
+# ++++++++++++++++++++++++++++++++
+# -----------------------------------
 def loadVideo(path, num_frames=None, greyscale=True):
     """load the video"""
     if not num_frames is None:
         return skvideo.io.vread(path, as_grey=greyscale, num_frames=num_frames)
     else:
         return skvideo.io.vread(path, as_grey=greyscale)
+# -----------------------------------
 
 
 def load_config(path):

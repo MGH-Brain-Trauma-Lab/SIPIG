@@ -66,8 +66,8 @@ if gpus:
 # ==================================================
 
 # Configuration
-# CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_extraction/temporal_split_5min_1fps_petite/'
-CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_topview_200/'
+#CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_extraction/temporal_split_5min_1fps_petite/'
+CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-14-25_80_3classcure_p01train/'
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_jan6_max154_lying/'
 CONFIG_NAME = 'default'
 
@@ -89,10 +89,10 @@ print(f"  Val: {x_val.shape}, labels: {len(y_val)}")
 print(f"  Test: {x_test.shape}, labels: {len(y_test)}")
 
 # +++++++++ COMBINE LYING INTO ONE CATEGORY +++++++++
-# y_train = ['lying' if 'lying' in label else label for label in y_train]
-# y_test = ['lying' if 'lying' in label else label for label in y_test]
-# if y_val is not None:
-#     y_val = ['lying' if 'lying' in label else label for label in y_val]
+y_train = ['lying' if 'lying' in label else label for label in y_train]
+y_test = ['lying' if 'lying' in label else label for label in y_test]
+if y_val is not None:
+    y_val = ['lying' if 'lying' in label else label for label in y_val]
 # NOTE: Also need to change num_classes to 3
 # ++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -113,15 +113,18 @@ config = load_config(f"configs/behavior/{CONFIG_NAME}")
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
 config['recognition_model_lr'] = 3e-5
-config['recognition_model_epochs'] = 50
-config['recognition_model_batch_size'] = 4
+config['recognition_model_epochs'] = 10
+config['recognition_model_batch_size'] = 16
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
 config['recognition_model_optimizer'] = 'adam'
 config['recognition_model_loss'] = 'focal_loss'
 
 # Pretrained Recognition Model Parameters
-# config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5'
+config['image_x'] = config['image_y'] = 75
+config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5'
+#config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug_200/encoder_epoch_20.h5'
+
 config['freeze_pretrained'] = False  # Freeze backbone, only train classification head
 
 # Sequential Model Parameters
@@ -131,7 +134,7 @@ config['recognition_model_remove_classification'] = True
 
 config['sequential_model_lr'] = 0.0001
 config['sequential_model_epochs'] = 10
-config['sequential_model_batch_size'] = 8
+config['sequential_model_batch_size'] = 16
 config['sequential_backbone'] = 'lstm'
 config['sequential_model_optimizer'] = 'adam'
 config['look_back'] = 5
@@ -139,7 +142,7 @@ config["temporal_causal"] = False # personally created parameter --> used in Swi
 config['sequential_model_loss'] = 'focal_loss'
 
 # Data Parameters
-config['num_classes'] = 4
+config['num_classes'] = 3
 config['undersample_data'] = False
 config['recognition_model_augmentation'] = 3 # 0-3 levels
 config['use_class_weights'] = True  # Force boolean
@@ -147,8 +150,6 @@ config['normalize_data'] = True
 config['encode_labels'] = True
 config['use_generator'] = True
 config['do_flow'] = False
-config['image_x'] = 200 # not really used
-config['image_y'] = 200 # not really used
 
 # Scheduler (Not really used but required)
 config['recognition_model_use_scheduler'] = False  # Force boolean
@@ -210,6 +211,16 @@ for key in ['train_recognition_model', 'use_class_weights', 'recognition_model_u
 # print(f"After oversampling: {Counter(y_train)}")
 # ==========================================================
 
+# ================= TEMP MEMORY FIX BY REDUCING VAL ==============
+# Reduce validation set size to prevent OOM
+# if len(x_val) > 5000:
+#     print(f"Reducing validation set from {len(x_val)} to 5000 samples")
+#     sample_idx = np.random.choice(len(x_val), 5000, replace=False)
+#     x_val = x_val[sample_idx]
+#     y_val = y_val[sample_idx]
+# =======================================================
+
+
 # ================= DATA LOADER =================
 # Create SIPEC dataloader with appropriate validation data
 print("\nCreating dataloader...")
@@ -219,7 +230,8 @@ dataloader = Dataloader(x_train, y_train, x_val, y_val, config=config)
 print("Preparing data...")
 dataloader.prepare_data(
 #     downscale=(75, 75),
-    downscale=(200, 200),
+#     downscale=(200, 200),
+    downscale=(config['image_x'], config['image_y']),
     remove_behaviors=[],
     flatten=False,
     recurrent=False
@@ -277,6 +289,38 @@ if config['use_class_weights']:
         class_weights = class_weights_dict  # Pass dict instead of array
 # ==========================================================
         
+    
+# =================== ADD MODEL CHECKPOINTING =======================
+from tensorflow.keras.callbacks import ModelCheckpoint
+
+# Create checkpoints directory
+os.makedirs('checkpoints', exist_ok=True)
+
+# Save best model based on validation F1
+checkpoint_best = ModelCheckpoint(
+    f'checkpoints_{CLIPS_OUTPUT_DIR.split("/")[-2]}/best_f1_model_seed_{SEED}_nclasses{config["num_classes"]}_framedim_{config["image_x"]}.h5',
+    monitor='val_sklearn_f1',
+    save_best_only=True,
+    mode='max',  # Maximize F1
+    verbose=1
+)
+
+# Save every epoch UNUSED
+checkpoint_periodic = ModelCheckpoint(
+    f'checkpoints/model_epoch_{{epoch:02d}}_seed_{SEED}_nclasses{config["num_classes"]}_framedim_{config["image_x"]}.h5',
+    save_freq='epoch',
+    verbose=1
+)
+
+# Add to config so they get passed to the model
+if 'callbacks' not in config:
+    config['callbacks'] = []
+# config['callbacks'].extend([checkpoint_best, checkpoint_periodic])
+config['callbacks'].extend([checkpoint_best])
+
+# ====================================================================
+
+    
 # =================== MODEL TRAINING =======================
 
 print("\n" + "="*80)
@@ -288,7 +332,8 @@ model, results, report = train_behavior(
     config,
     num_classes=config['num_classes'],
     encode_labels=False,
-    class_weights=class_weights
+    class_weights=class_weights,
+    additional_callbacks=config.get('callbacks', []),
 )
 
 print("\n" + "="*80)
@@ -364,7 +409,7 @@ ax.set_title('Validation Set Confusion Matrix')
 wandb.log({"val_confusion_matrix": wandb.Image(fig)})
 plt.close(fig)
 
-# Save model
+# # Save model
 now = datetime.now().strftime("%m-%d-%Y_%HH-%MM-%SS")
 name = f'pig_behavior_model_{now}_seed{SEED}.h5'
 model.recognition_model.save(name)
@@ -372,20 +417,20 @@ print(f"\nModel saved to: {name}")
 print(f"Seed used: {SEED}")
 
 # Save model as wandb artifact
-artifact = wandb.Artifact(
-    name=f'pig-behavior-model-{now}',
-    type='model',
-    description='Pig behavior classification model (xception)',
-    metadata={
-        'architecture': 'xception',
-        'num_classes': 4,
-        'input_size': (75, 75, 3),
-        'val_accuracy': results[0],
-        'val_f1': results[1],
-    }
-)
-artifact.add_file(name)
-wandb.log_artifact(artifact)
+# artifact = wandb.Artifact(
+#     name=f'pig-behavior-model-{now}',
+#     type='model',
+#     description='Pig behavior classification model (xception)',
+#     metadata={
+#         'architecture': 'xception',
+#         'num_classes': 4,
+#         'input_size': (75, 75, 3),
+#         'val_accuracy': results[0],
+#         'val_f1': results[1],
+#     }
+# )
+# artifact.add_file(name)
+# wandb.log_artifact(artifact)
 # ===========================================================
 
 # =========== SAVE MODEL HISTORY + WEIGHTS TO WANDB =========

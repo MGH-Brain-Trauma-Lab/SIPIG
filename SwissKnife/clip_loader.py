@@ -106,13 +106,15 @@ def load_clips_from_directory(clips_dir, annotations_json, framerate=1, greyscal
     all_videos = []
     all_labels = []
     
-    for video_path in video_files:
+    for video_number, video_path in enumerate(video_files):
         clip_filename = os.path.basename(video_path)
         
         # Load video
-        print(f"  Loading {clip_filename}...", end=' ')
+        print(f" ({video_number + 1}/{len(video_files)}) Loading {clip_filename}...", end=' ')
         video = loadVideo(video_path, greyscale=greyscale, num_frames=None)
-        
+        # ADD THIS: Expand dims for greyscale to add channel dimension
+        if greyscale and len(video.shape) == 3:  # (frames, height, width)
+            video = np.expand_dims(video, axis=-1)  # (frames, height, width, 1)
         min_frames = 30 * framerate   # 30s
         if len(video) < min_frames:
             print(f"SKIPPED (too short: {len(video)} frames, required: {min_frames})")
