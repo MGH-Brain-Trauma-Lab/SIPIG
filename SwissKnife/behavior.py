@@ -82,7 +82,7 @@ def train_behavior(
                     augmentation=None,
                     normalize=True,
                     mode='recognition',
-                    frames_per_video=10,
+                    frames_per_video=50,
                 )
                 dataloader.validation_generator = StreamingDataGenerator(
                     clip_paths=dataloader.val_paths,
