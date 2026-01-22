@@ -177,6 +177,9 @@ class Dataloader:
         self.x_test_recurrent = None
         self.y_train_recurrent = None
         self.y_test_recurrent = None
+        
+        self.dlc_train = None
+        self.dlc_test = None
 
         self.use_generator = False
 
