@@ -19,8 +19,8 @@ import os
 import random
 
 # =========== SET SEED ==========
-SEED = None  # Change this to whatever you want, or set to None for random
-# SEED = None  # Uncomment this line for random seed
+#SEED = 931165  # Change this to whatever you want, or set to None for random
+SEED = None  # Uncomment this line for random seed
 
 if SEED is None:
     SEED = random.randint(0, 999999)
@@ -69,9 +69,9 @@ if gpus:
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_extraction/temporal_split_5min_1fps_petite/'
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_topview_200/'
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_jan6_max154_lying/'
-CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-14-25_200/'
+CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-14-25_80_3classp01/'
 CONFIG_NAME = 'default'
-USE_STREAMING = True  # ← TOGGLE THIS to switch modes
+USE_STREAMING = False  # ← TOGGLE THIS to switch modes
 
 # =========== LOAD TRAINING/VAL/TEST DATA ==========
 if USE_STREAMING:
@@ -130,21 +130,21 @@ config = load_config(f"configs/behavior/{CONFIG_NAME}")
 # Major data parameters (will crash with wrong values)
 config['use_streaming'] = USE_STREAMING  # Pass to config
 config['use_generator'] = True  # Must be True for streaming
-IMG_DIM = 200
+IMG_DIM = 75
 config['image_x'] = IMG_DIM
 config['image_y'] = IMG_DIM
 config['num_classes'] = 3
 
 # Pretrained Recognition Model Parameters
-# config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5'
-config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug_200/encoder_epoch_100.h5'
+config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5'
+#config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug_200/encoder_epoch_100.h5'
 config['freeze_pretrained'] = False  # Freeze backbone, only train classification head
 
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
 config['recognition_model_lr'] = 3e-5
-config['recognition_model_epochs'] = 2
-config['recognition_model_batch_size'] = 64
+config['recognition_model_epochs'] = 10
+config['recognition_model_batch_size'] = 16
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
 config['recognition_model_optimizer'] = 'adam'
@@ -433,9 +433,9 @@ artifact = wandb.Artifact(
     type='model',
     description='Pig behavior classification model (xception)',
     metadata={
-        'architecture': 'xception',
-        'num_classes': 4,
-        'input_size': (75, 75, 3),
+        'architecture': config['backbone'],
+        'num_classes': config['num_classes'],
+        'input_size': (config['image_x'], config['image_y'], 3),
         'val_accuracy': results[0],
         'val_f1': results[1],
     }
