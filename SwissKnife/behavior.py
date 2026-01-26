@@ -58,127 +58,244 @@ def train_behavior(
         augmentation = mouse_identification(level=config["recognition_model_augmentation"])
         our_model.set_augmentation(augmentation)
         print(f"Using augmentation level {config['recognition_model_augmentation']}")
-    
-    our_model.set_optimizer(
-        config["recognition_model_optimizer"],
-        lr=config["recognition_model_lr"],
-    )
-    if config["recognition_model_use_scheduler"]:
-        our_model.scheduler_lr = config["recognition_model_scheduler_lr"]
-        our_model.scheduler_factor = config["recognition_model_scheduler_factor"]
-        our_model.set_lr_scheduler()
-    else:
-        # use standard training callback
-        CB_es, CB_lr = callbacks_learningRate_plateau()
-        our_model.add_callbacks([CB_es, CB_lr])
-
-    # add sklearn metrics for tracking in training
-    #my_metrics = Metrics(validation_data=(dataloader.x_test, dataloader.y_test))
-    my_metrics = Metrics(
-        validation_data=(dataloader.x_test, dataloader.y_test),
-        class_names=dataloader.label_encoder.classes_
-    )
-    my_metrics.setModel(our_model.recognition_model)
-    our_model.add_callbacks([my_metrics])
-
-    try:
-        from wandb.integration.keras import WandbMetricsLogger
-        wandb_callback = WandbMetricsLogger(
-            log_freq='epoch'
-        )
-        our_model.add_callbacks([wandb_callback])
-    except ImportError:
-        print("WandB not available, skipping callback")
 
     if config["train_recognition_model"]:
+        # ============ INITIALIZE VALIDATION SUBSET WITH DEFAULTS ============
+        x_val_subset = dataloader.x_test if hasattr(dataloader, 'x_test') else None
+        y_val_subset = dataloader.y_test if hasattr(dataloader, 'y_test') else None
+        
+        # ============ SETUP GENERATORS ============
         if dataloader.config["use_generator"]:
-            dataloader.training_generator = DataGenerator(
-                x_train=dataloader.x_train,
-                y_train=dataloader.y_train,
-                look_back=dataloader.config["look_back"],
-                batch_size=config["recognition_model_batch_size"],
-                type="recognition",
-                temporal_causal=config["temporal_causal"],
+            if dataloader.streaming_mode:
+                # Use StreamingDataGenerator
+                from SwissKnife.dataloader import StreamingDataGenerator
+
+                print("Creating STREAMING generators for recognition model...")
+                dataloader.training_generator = StreamingDataGenerator(
+                    clip_paths=dataloader.train_paths,
+                    labels=dataloader.train_labels_raw,
+                    label_encoder=dataloader.label_encoder,
+                    num_classes=dataloader.num_classes,
+                    batch_size=config["recognition_model_batch_size"],
+                    target_size=dataloader.target_size,
+                    shuffle=True,
+                    augmentation=None,
+                    normalize=True,
+                    mode='recognition',
+                    frames_per_video=50,
+                )
+                dataloader.validation_generator = StreamingDataGenerator(
+                    clip_paths=dataloader.val_paths,
+                    labels=dataloader.val_labels_raw,
+                    label_encoder=dataloader.label_encoder,
+                    num_classes=dataloader.num_classes,
+                    batch_size=config["recognition_model_batch_size"],
+                    target_size=dataloader.target_size,
+                    shuffle=False,
+                    augmentation=None,
+                    normalize=True,
+                    mode='recognition',
+                    frames_per_video=1,  # ← Keep at 1 for consistent validation
+                )
+
+                # Create validation subset for metrics
+                print("Creating validation subset for metrics...")
+                val_batches_to_load = min(10, len(dataloader.validation_generator))
+                x_val_list = []
+                y_val_list = []
+
+                for i in range(val_batches_to_load):
+                    batch_x, batch_y = dataloader.validation_generator[i]
+                    x_val_list.append(batch_x)
+                    y_val_list.append(batch_y)
+
+                x_val_subset = np.concatenate(x_val_list, axis=0)
+                y_val_subset = np.concatenate(y_val_list, axis=0)
+
+                print(f"Validation subset for metrics: {x_val_subset.shape}")
+
+            else:
+                # Traditional DataGenerator
+                print("Creating TRADITIONAL generators...")
+                dataloader.training_generator = DataGenerator(
+                    x_train=dataloader.x_train,
+                    y_train=dataloader.y_train,
+                    look_back=dataloader.config["look_back"],
+                    batch_size=config["recognition_model_batch_size"],
+                    type="recognition",
+                    temporal_causal=config["temporal_causal"],
+                )
+                dataloader.validation_generator = DataGenerator(
+                    x_train=dataloader.x_test,
+                    y_train=dataloader.y_test,
+                    look_back=dataloader.config["look_back"],
+                    batch_size=config["recognition_model_batch_size"],
+                    type="recognition",
+                    temporal_causal=config["temporal_causal"],
+                )
+
+                # Use full validation data for metrics
+                x_val_subset = dataloader.x_test
+                y_val_subset = dataloader.y_test
+
+        # ============ SETUP METRICS CALLBACK ============
+        if x_val_subset is not None and y_val_subset is not None:
+            my_metrics = Metrics(
+                validation_data=(x_val_subset, y_val_subset),
+                class_names=dataloader.label_encoder.classes_
             )
-            dataloader.validation_generator = DataGenerator(
-                x_train=dataloader.x_test,
-                y_train=dataloader.y_test,
-                look_back=dataloader.config["look_back"],
-                batch_size=config["recognition_model_batch_size"],
-                type="recognition",
-                temporal_causal=config["temporal_causal"],
-            )
+            my_metrics.setModel(our_model.recognition_model)
+            our_model.add_callbacks([my_metrics])
+
+        # ============ REST OF TRAINING SETUP ============
+        try:
+            from wandb.integration.keras import WandbMetricsLogger
+            wandb_callback = WandbMetricsLogger(log_freq='epoch')
+            our_model.add_callbacks([wandb_callback])
+        except ImportError:
+            print("WandB not available, skipping callback")
+            
+        # ============ SETUP OPTIMIZER & SCHEDULER ============
+        our_model.set_optimizer(
+            config["recognition_model_optimizer"],
+            lr=config["recognition_model_lr"],
+        )
+
+        if config["recognition_model_use_scheduler"]:
+            our_model.scheduler_lr = config["recognition_model_scheduler_lr"]
+            our_model.scheduler_factor = config["recognition_model_scheduler_factor"]
+            our_model.set_lr_scheduler()
+        else:
+            # use standard training callback
+            CB_es, CB_lr = callbacks_learningRate_plateau()
+            our_model.add_callbacks([CB_es, CB_lr])
+
+        # ============ ACTUALLY TRAIN ============
         our_model.recognition_model_epochs = config["recognition_model_epochs"]
         our_model.recognition_model_batch_size = config["recognition_model_batch_size"]
         print()
         our_model.train_recognition_network(dataloader=dataloader)
         print(config)
-    # ++++++++++++++++++++++++ generated code ++++++++++++++++++
+        
     # ==================== SEQUENTIAL MODEL TRAINING ====================
     if config["train_sequential_model"]:
+        # ============ INITIALIZE VALIDATION SUBSET WITH DEFAULTS ============
+        x_val_subset = dataloader.x_test_recurrent if hasattr(dataloader, 'x_test_recurrent') else None
+        y_val_subset = dataloader.y_test_recurrent if hasattr(dataloader, 'y_test_recurrent') else None
+        
+        # ============ SETUP GENERATORS ============
         if dataloader.config["use_generator"]:
-            dataloader.training_generator = DataGenerator(
-                x_train=dataloader.x_train,
-                y_train=dataloader.y_train,
-                look_back=dataloader.config["look_back"],
-                batch_size=32,
-                type="sequential",
-                temporal_causal=config["temporal_causal"],
-            )
-            dataloader.validation_generator = DataGenerator(
-                x_train=dataloader.x_test,
-                y_train=dataloader.y_test,
-                look_back=dataloader.config["look_back"],
-                batch_size=config["recognition_model_batch_size"],
-                type="sequential",
-                temporal_causal=config["temporal_causal"],
-            )
+            if dataloader.streaming_mode:
+                # Use StreamingDataGenerator in sequential mode
+                from SwissKnife.dataloader import StreamingDataGenerator
 
-            # ============ CREATE VALIDATION SUBSET FOR METRICS ============
-            print("\nCreating validation subset for metrics tracking...")
+                print("Creating STREAMING generators for sequential model...")
+                dataloader.training_generator = StreamingDataGenerator(
+                    clip_paths=dataloader.train_paths,
+                    labels=dataloader.train_labels_raw,
+                    label_encoder=dataloader.label_encoder,
+                    num_classes=dataloader.num_classes,
+                    batch_size=config["sequential_model_batch_size"],
+                    target_size=dataloader.target_size,
+                    shuffle=True,
+                    augmentation=None,
+                    normalize=True,
+                    mode='sequential',  # Sequential mode
+                    look_back=dataloader.config["look_back"],
+                    temporal_causal=config["temporal_causal"],
+                )
+                dataloader.validation_generator = StreamingDataGenerator(
+                    clip_paths=dataloader.val_paths,
+                    labels=dataloader.val_labels_raw,
+                    label_encoder=dataloader.label_encoder,
+                    num_classes=dataloader.num_classes,
+                    batch_size=config["sequential_model_batch_size"],
+                    target_size=dataloader.target_size,
+                    shuffle=False,
+                    augmentation=None,
+                    normalize=True,
+                    mode='sequential',
+                    look_back=dataloader.config["look_back"],
+                    temporal_causal=config["temporal_causal"],
+                )
 
-            total_val_samples = len(dataloader.validation_generator) * config["recognition_model_batch_size"]
-            n_samples = min(2000, max(500, int(total_val_samples * 0.2)))
-            n_batches = int(n_samples / config["recognition_model_batch_size"])
+                # Create validation subset for metrics
+                print("\nCreating validation subset for metrics tracking...")
+                val_batches_to_load = min(3, len(dataloader.validation_generator))
+                x_val_list = []
+                y_val_list = []
 
-            sample_indices = np.linspace(0, len(dataloader.validation_generator) - 1, n_batches, dtype=int)
+                for i in range(val_batches_to_load):
+                    batch_x, batch_y = dataloader.validation_generator[i]
+                    x_val_list.append(batch_x)
+                    y_val_list.append(batch_y)
 
-            val_sequences = []
-            val_labels = []
-            for idx in sample_indices:
-                batch_x, batch_y = dataloader.validation_generator[idx]
-                val_sequences.append(batch_x)
-                val_labels.append(batch_y)
+                x_val_subset = np.concatenate(x_val_list, axis=0)
+                y_val_subset = np.concatenate(y_val_list, axis=0)
 
-            x_val_subset = np.concatenate(val_sequences, axis=0)
-            y_val_subset = np.concatenate(val_labels, axis=0)
+                print(f"Validation subset: {x_val_subset.shape}")
 
-            print(f"Validation subset: {x_val_subset.shape} ({len(x_val_subset)/total_val_samples*100:.1f}%)")
-            # ===============================================================
+            else:
+                # Traditional DataGenerator
+                dataloader.training_generator = DataGenerator(
+                    x_train=dataloader.x_train,
+                    y_train=dataloader.y_train,
+                    look_back=dataloader.config["look_back"],
+                    batch_size=config["sequential_model_batch_size"],
+                    type="sequential",
+                    temporal_causal=config["temporal_causal"],
+                )
+                dataloader.validation_generator = DataGenerator(
+                    x_train=dataloader.x_test,
+                    y_train=dataloader.y_test,
+                    look_back=dataloader.config["look_back"],
+                    batch_size=config["sequential_model_batch_size"],
+                    type="sequential",
+                    temporal_causal=config["temporal_causal"],
+                )
 
+                # Create validation subset for traditional mode
+                total_val_samples = len(dataloader.validation_generator) * config["sequential_model_batch_size"]
+                n_samples = min(2000, max(500, int(total_val_samples * 0.2)))
+                n_batches = int(n_samples / config["sequential_model_batch_size"])
+
+                sample_indices = np.linspace(0, len(dataloader.validation_generator) - 1, n_batches, dtype=int)
+
+                val_sequences = []
+                val_labels = []
+                for idx in sample_indices:
+                    batch_x, batch_y = dataloader.validation_generator[idx]
+                    val_sequences.append(batch_x)
+                    val_labels.append(batch_y)
+
+                x_val_subset = np.concatenate(val_sequences, axis=0)
+                y_val_subset = np.concatenate(val_labels, axis=0)
+
+                print(f"Validation subset: {x_val_subset.shape} ({len(x_val_subset)/total_val_samples*100:.1f}%)")
+
+        # ============ FIX RECOGNITION MODEL ============
         if config["recognition_model_fix"]:
             our_model.fix_recognition_layers()
         if config["recognition_model_remove_classification"]:
             our_model.remove_classification_layers()
 
+        # ============ CREATE SEQUENTIAL MODEL ============
         our_model.set_sequential_model(
             architecture=config["sequential_backbone"],
             input_shape=dataloader.get_input_shape(recurrent=True),
             num_classes=num_classes,
         )
 
-        # ============ FIX METRICS CALLBACK ============
-        if dataloader.config["use_generator"]:
-            # Use the validation subset we created
-            my_metrics.validation_data = (x_val_subset, y_val_subset)
-        else:
-            # Use full recurrent data
-            my_metrics.validation_data = (dataloader.x_test_recurrent, dataloader.y_test_recurrent)
+        # ============ SETUP METRICS CALLBACK ============
+        if x_val_subset is not None and y_val_subset is not None:
+            my_metrics = Metrics(
+                validation_data=(x_val_subset, y_val_subset),
+                class_names=dataloader.label_encoder.classes_
+            )
+            my_metrics.setModel(our_model.sequential_model)
+            our_model.add_callbacks([my_metrics])
 
-        my_metrics.setModel(our_model.sequential_model)
-        our_model.add_callbacks([my_metrics])
-        # ==============================================
-
+        # ============ SETUP OPTIMIZER & SCHEDULER ============
         our_model.set_optimizer(
             config["sequential_model_optimizer"],
             lr=config["sequential_model_lr"],
@@ -194,20 +311,9 @@ def train_behavior(
             CB_es, CB_lr = callbacks_learningRate_plateau()
             our_model.add_callbacks([CB_es, CB_lr])
 
-        # Training always happens (outside scheduler conditional)
+        # ============ ACTUALLY TRAIN ============
         our_model.sequential_model_epochs = config["sequential_model_epochs"]
         our_model.sequential_model_batch_size = config["sequential_model_batch_size"]
-
-#         print("\n" + "="*80)
-#         print("ABOUT TO START SEQUENTIAL MODEL TRAINING")
-#         print("="*80)
-#         print(f"Model summary:")
-#         print(our_model.sequential_model.summary())
-#         print(f"Callbacks: {[type(cb).__name__ for cb in our_model.callbacks]}")
-#         print(f"Training generator batches: {len(dataloader.training_generator)}")
-#         print(f"Validation generator batches: {len(dataloader.validation_generator)}")
-#         print(f"Epochs: {our_model.sequential_model_epochs}")
-#         print("="*80 + "\n")
 
         our_model.train_sequential_network(dataloader=dataloader)
 

@@ -221,3 +221,128 @@ def load_training_data(output_dir, annotations_filename='annotations.json',
         data['test'] = (x_test, y_test)
     
     return data
+
+def load_training_metadata(clips_output_dir, framerate=1):
+    """
+    Load video file paths and labels without loading actual frames.
+    Supports .mp4, .avi video files.
+    
+    Returns:
+        dict with keys 'train', 'val', 'test'
+        Each value is (list_of_paths, list_of_labels)
+    """
+    import os
+    import re
+    from glob import glob
+    
+    print(f"\n{'='*70}")
+    print(f"LOADING METADATA FROM: {clips_output_dir}")
+    print(f"{'='*70}")
+    
+    # First check if the base directory exists
+    if not os.path.exists(clips_output_dir):
+        print(f"❌ ERROR: Base directory does not exist!")
+        print(f"   Path: {clips_output_dir}")
+        return {'train': ([], []), 'val': ([], []), 'test': ([], [])}
+    
+    print(f"✓ Base directory exists")
+    
+    splits = ['train', 'val', 'test']
+    data = {}
+    
+    for split in splits:
+        print(f"\n{'─'*70}")
+        print(f"Processing: {split}")
+        print(f"{'─'*70}")
+        
+        split_dir = os.path.join(clips_output_dir, split)
+        print(f"Looking in: {split_dir}")
+        
+        if not os.path.exists(split_dir):
+            print(f"  ❌ Directory does not exist!")
+            data[split] = ([], [])
+            continue
+        
+        print(f"  ✓ Directory exists")
+        
+        # Find video files
+        video_files = []
+        for ext in ['*.mp4', '*.avi', '*.mov', '*.MP4', '*.AVI', '*.MOV']:
+            pattern = os.path.join(split_dir, ext)
+            found = sorted(glob(pattern))
+            if found:
+                video_files.extend(found)
+        
+        video_files = sorted(list(set(video_files)))  # Remove duplicates
+        
+        if not video_files:
+            print(f"  ❌ No video files found!")
+            data[split] = ([], [])
+            continue
+        
+        print(f"  ✓ Found {len(video_files)} video files")
+        print(f"  Sample filenames:")
+        for i, path in enumerate(video_files[:3]):
+            print(f"    {i+1}. {os.path.basename(path)}")
+        
+        # Extract labels from filenames
+        # Expected format: BID_XX-XXX_date_time_period_duration_XXXX_LABEL_chunk_XX.mp4
+        labels = []
+        
+        for path in video_files:
+            filename = os.path.basename(path)
+            # Remove extension
+            name_without_ext = os.path.splitext(filename)[0]
+            
+            # Split by underscore
+            parts = name_without_ext.split('_')
+            
+            # The label should be the second-to-last part (before "chunk")
+            # Format: ..._LABEL_chunk_XX
+            try:
+                if len(parts) >= 2 and parts[-2] == 'chunk':
+                    # Label is at parts[-3]
+                    label = parts[-3]
+                elif len(parts) >= 1:
+                    # Fallback: try to find a label-like part
+                    # Look for parts that match behavior names
+                    behavior_keywords = ['lying-asleep', 'lying-awake', 'upright', 'obstructed', 
+                                        'lying_asleep', 'lying_awake', 'lying', 'asleep', 'awake']
+                    
+                    for part in reversed(parts):  # Search from end
+                        if part.lower() in behavior_keywords or any(kw in part.lower() for kw in behavior_keywords):
+                            label = part
+                            break
+                    else:
+                        # If no match, use the part before "chunk" or last part
+                        label = parts[-2] if len(parts) > 1 else parts[0]
+                else:
+                    label = 'unknown'
+                
+                # Clean up label: replace hyphens with spaces if desired
+                # Keep as-is: "lying-asleep" or convert to "lying asleep"
+                label = label.replace('-', ' ')  # Convert to space-separated
+                label = label.strip().lower()
+                
+                labels.append(label)
+            except Exception as e:
+                print(f"  ⚠ Error extracting label from {filename}: {e}")
+                labels.append('unknown')
+        
+        # Show label statistics
+        from collections import Counter
+        unique_labels = set(labels)
+        print(f"  ✓ Unique labels found: {unique_labels}")
+        
+        label_counts = Counter(labels)
+        print(f"  Label distribution:")
+        for label, count in sorted(label_counts.items()):
+            print(f"    {label}: {count}")
+        
+        data[split] = (video_files, labels)
+    
+    print(f"\n{'='*70}")
+    print(f"METADATA LOADING COMPLETE")
+    print(f"{'='*70}\n")
+    
+    return data
