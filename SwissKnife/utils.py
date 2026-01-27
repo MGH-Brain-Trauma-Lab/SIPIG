@@ -654,7 +654,6 @@ class Metrics(tf.keras.callbacks.Callback):
 
         y_predict = self.model.predict(X_val)
         y_predict = np.argmax(y_predict, axis=-1).astype(int)
-#         print(classification_report(y_val, y_predict))
 
         if self.class_names is not None:
             print(classification_report(y_val, y_predict, target_names=self.class_names))
@@ -667,11 +666,113 @@ class Metrics(tf.keras.callbacks.Callback):
         from scipy.stats import pearsonr
         corr = pearsonr(y_val, y_predict)[0]
 
+        # ========== HIERARCHICAL METRICS (UPDATED WITH BALANCED VERSIONS) ==========
+        if self.class_names is not None:
+            try:
+                obstructed_idx = np.where(self.class_names == 'obstructed')[0][0]
+                lying_idx = np.where(self.class_names == 'lying')[0][0]
+
+                # 1. Visibility Detection (Binary)
+                y_val_visible = (y_val != obstructed_idx).astype(int)
+                y_pred_visible = (y_predict != obstructed_idx).astype(int)
+                visibility_acc_raw = (y_val_visible == y_pred_visible).mean()
+
+                # Balanced visibility detection
+                visibility_acc_balanced = balanced_accuracy_score(y_val_visible, y_pred_visible)
+
+                # 2. Behavior Classification (on visible frames only)
+                visible_mask = y_val != obstructed_idx
+                if visible_mask.sum() > 0:
+                    behavior_acc_raw = (y_val[visible_mask] == y_predict[visible_mask]).mean()
+                    # Balanced behavior classification
+                    behavior_acc_balanced = balanced_accuracy_score(
+                        y_val[visible_mask], 
+                        y_predict[visible_mask]
+                    )
+                else:
+                    behavior_acc_raw = 0.0
+                    behavior_acc_balanced = 0.0
+
+                # 3. Relaxed Accuracy
+                correct = (y_val == y_predict)
+                lying_as_obstructed = (y_val == lying_idx) & (y_predict == obstructed_idx)
+                obstructed_as_lying = (y_val == obstructed_idx) & (y_predict == lying_idx)
+                relaxed_correct = correct | lying_as_obstructed | obstructed_as_lying
+                relaxed_acc_raw = relaxed_correct.mean()
+
+                # Balanced relaxed accuracy
+                # Create "relaxed predictions" where lying/obstructed are treated as same
+                y_val_relaxed = y_val.copy()
+                y_pred_relaxed = y_predict.copy()
+                # Map both lying and obstructed to same class (e.g., obstructed_idx)
+                y_val_relaxed[y_val == lying_idx] = obstructed_idx
+                y_pred_relaxed[y_predict == lying_idx] = obstructed_idx
+
+                # Now it's effectively a 2-class problem: upright vs (lying/obstructed)
+                relaxed_acc_balanced = balanced_accuracy_score(y_val_relaxed, y_pred_relaxed)
+
+                # 4. Overall accuracy
+                overall_acc_raw = correct.mean()
+
+                # 5. Ambiguous counts
+                lying_to_obstructed_count = int(lying_as_obstructed.sum())
+                obstructed_to_lying_count = int(obstructed_as_lying.sum())
+                total_ambiguous = lying_to_obstructed_count + obstructed_to_lying_count
+
+                # Print hierarchical metrics
+                print("\n" + "="*70)
+                print("HIERARCHICAL METRICS")
+                print("="*70)
+                print(f"Overall Accuracy:                  {overall_acc_raw:.4f} (raw)")
+                print(f"Relaxed Accuracy (lying/obst OK):  {relaxed_acc_raw:.4f} (raw)  |  {relaxed_acc_balanced:.4f} (balanced)")
+                print(f"Visibility Detection:               {visibility_acc_raw:.4f} (raw)  |  {visibility_acc_balanced:.4f} (balanced)")
+                print(f"Behavior Classification:            {behavior_acc_raw:.4f} (raw)  |  {behavior_acc_balanced:.4f} (balanced)")
+                print(f"\nAmbiguous Cases:")
+                print(f"  Lying → Obstructed: {lying_to_obstructed_count}")
+                print(f"  Obstructed → Lying: {obstructed_to_lying_count}")
+                print(f"  Total ambiguous:    {total_ambiguous}")
+                print("="*70 + "\n")
+
+            except (IndexError, ValueError) as e:
+                print(f"Could not calculate hierarchical metrics: {e}")
+                visibility_acc_raw = None
+                visibility_acc_balanced = None
+                behavior_acc_raw = None
+                behavior_acc_balanced = None
+                relaxed_acc_raw = None
+                relaxed_acc_balanced = None
+                overall_acc_raw = None
+                lying_to_obstructed_count = 0
+                obstructed_to_lying_count = 0
+                total_ambiguous = 0
+        else:
+            visibility_acc_raw = None
+            visibility_acc_balanced = None
+            behavior_acc_raw = None
+            behavior_acc_balanced = None
+            relaxed_acc_raw = None
+            relaxed_acc_balanced = None
+            overall_acc_raw = None
+            lying_to_obstructed_count = 0
+            obstructed_to_lying_count = 0
+            total_ambiguous = 0
+        # ===============================================
+
         self._data.append(
             {
                 "val_balanced_acc": bal_acc,
                 "val_sklearn_f1": f1,
                 "val_pearson_corr": corr,
+                "val_overall_acc_raw": overall_acc_raw,
+                "val_visibility_acc_raw": visibility_acc_raw,
+                "val_visibility_acc_balanced": visibility_acc_balanced,
+                "val_behavior_acc_raw": behavior_acc_raw,
+                "val_behavior_acc_balanced": behavior_acc_balanced,
+                "val_relaxed_acc_raw": relaxed_acc_raw,
+                "val_relaxed_acc_balanced": relaxed_acc_balanced,
+                "val_lying_to_obstructed": lying_to_obstructed_count,
+                "val_obstructed_to_lying": obstructed_to_lying_count,
+                "val_total_ambiguous": total_ambiguous,
             }
         )
         print("val_balanced_acc ::: " + str(bal_acc))
@@ -683,16 +784,32 @@ class Metrics(tf.keras.callbacks.Callback):
             import wandb
             if wandb.run is not None:
                 # Overall metrics
-                wandb.log({
+                wandb_metrics = {
                     "val_balanced_accuracy": bal_acc,
                     "val_macro_f1": f1,
                     "val_pearson_corr": corr,
-                })
+                }
+
+                # Add hierarchical metrics if available
+                if visibility_acc_raw is not None:
+                    wandb_metrics.update({
+                        "val_overall_acc_raw": overall_acc_raw,
+                        "val_visibility_acc_raw": visibility_acc_raw,
+                        "val_visibility_acc_balanced": visibility_acc_balanced,
+                        "val_behavior_acc_raw": behavior_acc_raw,
+                        "val_behavior_acc_balanced": behavior_acc_balanced,
+                        "val_relaxed_acc_raw": relaxed_acc_raw,
+                        "val_relaxed_acc_balanced": relaxed_acc_balanced,
+                        "val_lying_to_obstructed_count": lying_to_obstructed_count,
+                        "val_obstructed_to_lying_count": obstructed_to_lying_count,
+                        "val_total_ambiguous": total_ambiguous,
+                    })
+
+                wandb.log(wandb_metrics)
 
                 # Per-class metrics
                 report_dict = classification_report(y_val, y_predict, output_dict=True, zero_division=0)
 
-                # Get class names from wandb config or use indices
                 if hasattr(wandb.config, 'classes') and wandb.config.classes:
                     class_names = wandb.config.classes
                 else:
@@ -705,7 +822,7 @@ class Metrics(tf.keras.callbacks.Callback):
                             f"val_per_class/precision/{class_name}": report_dict[str(i)]['precision'],
                             f"val_per_class/recall/{class_name}": report_dict[str(i)]['recall'],
                             f"val_per_class/support/{class_name}": report_dict[str(i)]['support'],
-        })
+                        })
         except ImportError:
             pass
 
