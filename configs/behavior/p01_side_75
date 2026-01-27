@@ -1,0 +1,86 @@
+# ============================================================
+# Pig Behavior Training Configuration - Original Settings
+# Exact parameters from train_pig_behavior.py
+# ============================================================
+
+# ===================== RANDOM SEED ==========================
+seed = 388105
+
+# ==================== DATA PATHS ============================
+clips_output_dir = /home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-14-25_80_3classp01/
+# clips_output_dir = /home/tbiinterns/Desktop/semiology_ml/training_data/temporal_extraction/temporal_split_5min_1fps_petite/
+
+framerate = 1
+greyscale = False
+
+# ================= DATA LOADING MODE ========================
+use_streaming = False
+use_generator = True
+
+# ================ DATA PREPROCESSING ========================
+image_x = 75
+image_y = 75
+normalize_data = True
+encode_labels = True
+do_flow = False
+undersample_data = False
+use_class_weights = True
+recognition_model_augmentation = 3
+
+# =============== LABEL MERGING ==============================
+merge_lying_labels = True
+
+# =============== MODEL ARCHITECTURE =========================
+num_classes = 3
+backbone = mobilenet
+pretrained_weights_path = ../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5
+freeze_pretrained = False
+
+# ============ RECOGNITION MODEL TRAINING ====================
+train_recognition_model = True
+recognition_model_epochs = 5
+recognition_model_batch_size = 16
+recognition_model_lr = 0.00001
+recognition_model_optimizer = adam
+recognition_model_loss = focal_loss
+
+# ========== RECOGNITION MODEL SCHEDULER =====================
+recognition_model_use_scheduler = False
+recognition_model_scheduler_lr = 0.0001
+recognition_model_scheduler_factor = 1
+recognition_model_scheduler_lower_lr = 0.0000001
+
+# ============ SEQUENTIAL MODEL TRAINING =====================
+train_sequential_model = False
+recognition_model_fix = True
+recognition_model_remove_classification = True
+sequential_model_epochs = 10
+sequential_model_batch_size = 8
+sequential_model_lr = 0.0001
+sequential_model_optimizer = adam
+sequential_model_loss = focal_loss
+sequential_backbone = lstm
+look_back = 5
+temporal_causal = False
+sequential_model_use_scheduler = False
+
+# =================== GPU SETTINGS ===========================
+gpu_allow_growth = True
+gpu_memory_limit_mb = 20480
+gpu_deterministic_ops = True
+use_mixed_precision = False
+
+# ================= MODEL SAVING =============================
+save_model = True
+save_history = True
+save_to_wandb = True
+checkpoint_dir = ./checkpoints
+model_name_prefix = pig_behavior_model
+
+# =================== WANDB SETTINGS =========================
+wandb_enabled = True
+wandb_project = SIPIG-initial
+log_distributions = True
+log_confusion_matrix = True
+log_training_curves = True
+log_model_artifact = True
