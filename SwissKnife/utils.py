@@ -1197,31 +1197,83 @@ def loadVideo(path, num_frames=None, greyscale=True):
 
 
 def load_config(path):
+    """
+    Load config from file.
+    Supports:
+    - Comment lines starting with #
+    - Inline comments (after #)
+    - Blank lines
+    - key = value format
+    """
     params = {}
     with open(path) as f:
         for line in f.readlines():
+            # Remove newline
             if "\n" in line:
                 line = line.split("\n")[0]
+            
+            # Skip blank lines
+            if not line.strip():
+                continue
+            
+            # Skip comment lines (lines starting with #)
+            if line.strip().startswith("#"):
+                continue
+            
+            # Remove inline comments (everything after #)
+            if "#" in line:
+                line = line.split("#")[0]
+            
+            # Strip whitespace
+            line = line.strip()
+            
+            # Skip if empty after removing comments
+            if not line:
+                continue
+            
+            # Skip lines without " = "
+            if " = " not in line:
+                continue
+            
+            # Parse key = value
             try:
-                params[line.split(" = ")[0]] = int(line.split(" = ")[1])
-            except ValueError:
-                try:
-                    params[line.split(" = ")[0]] = float(line.split(" = ")[1])
-                except ValueError:
-                    if "," in str(line.split(" = ")[1]):
-                        if "." in line.split(" = ")[1]:
-                            help = line.split(" = ")[1].split(",")
-                            entries = [float(el) for el in help]
-                            params[line.split(" = ")[0]] = entries
-                        else:
-                            help = line.split(" = ")[1].split(",")
-                            entries = [int(el) for el in help]
-                            params[line.split(" = ")[0]] = entries
-                    else:
-                        if str(line.split(" = ")[1]) == "None":
-                            params[line.split(" = ")[0]] = None
-                        else:
-                            params[line.split(" = ")[0]] = str(line.split(" = ")[1])
+                key = line.split(" = ")[0]
+                value = line.split(" = ")[1]
+                
+                # Check for boolean values first
+                if value == "True":
+                    params[key] = True
+                elif value == "False":
+                    params[key] = False
+                # Check for None
+                elif value == "None":
+                    params[key] = None
+                else:
+                    # Try to parse as int
+                    try:
+                        params[key] = int(value)
+                    except ValueError:
+                        # Try to parse as float
+                        try:
+                            params[key] = float(value)
+                        except ValueError:
+                            # Check for lists
+                            if "," in value:
+                                if "." in value:
+                                    # Float list
+                                    entries = [float(el) for el in value.split(",")]
+                                    params[key] = entries
+                                else:
+                                    # Int list
+                                    entries = [int(el) for el in value.split(",")]
+                                    params[key] = entries
+                            else:
+                                # String
+                                params[key] = value
+            except Exception as e:
+                print(f"Warning: Could not parse line: '{line}' - {e}")
+                continue
+    
     return params
 
 
