@@ -19,8 +19,8 @@ import os
 import random
 
 # =========== SET SEED ==========
-#SEED = 931165  # Change this to whatever you want, or set to None for random
-SEED = None  # Uncomment this line for random seed
+SEED = 388105  # Change this to whatever you want, or set to None for random
+#SEED = None  # Uncomment this line for random seed
 
 if SEED is None:
     SEED = random.randint(0, 999999)
@@ -142,8 +142,8 @@ config['freeze_pretrained'] = False  # Freeze backbone, only train classificatio
 
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
-config['recognition_model_lr'] = 3e-5
-config['recognition_model_epochs'] = 10
+config['recognition_model_lr'] = 1e-5
+config['recognition_model_epochs'] = 3
 config['recognition_model_batch_size'] = 16
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
