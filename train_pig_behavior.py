@@ -75,11 +75,13 @@ CONFIG_NAME = 'default'
 USE_STREAMING = True  # ← TOGGLE THIS to switch modes
 
 # =========== LOAD TRAINING/VAL/TEST DATA ==========
+COMBINE_VAL_TEST = True  # ← NEW: Toggle to combine val and test
+
 if USE_STREAMING:
     print("Loading clip metadata (streaming mode)...")
     from SwissKnife.clip_loader import load_training_metadata
     
-    metadata = load_training_metadata(CLIPS_OUTPUT_DIR, framerate=1)
+    metadata = load_training_metadata(CLIPS_OUTPUT_DIR, framerate=1, combine_val_test=COMBINE_VAL_TEST)
     x_train, y_train = metadata['train']
     x_val, y_val = metadata['val']
     x_test, y_test = metadata['test']
@@ -90,7 +92,7 @@ if USE_STREAMING:
     print(f"  Test: {len(x_test)} clips")
 else:
     print("Loading all clips into memory (traditional mode)...")
-    data = load_training_data(CLIPS_OUTPUT_DIR, framerate=1, greyscale=False)
+    data = load_training_data(CLIPS_OUTPUT_DIR, framerate=1, greyscale=False, combine_val_test=COMBINE_VAL_TEST)
     
     x_train, y_train = data['train']
     x_val, y_val = data['val']
