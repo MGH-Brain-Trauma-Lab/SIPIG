@@ -19,7 +19,8 @@ import os
 import random
 
 # =========== SET SEED ==========
-SEED = 388105  # Change this to whatever you want, or set to None for random
+#SEED = 388105
+SEED = 931165 # Change this to whatever you want, or set to None for random
 #SEED = None  # Uncomment this line for random seed
 
 if SEED is None:
@@ -69,9 +70,9 @@ if gpus:
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_extraction/temporal_split_5min_1fps_petite/'
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_topview_200/'
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_jan6_max154_lying/'
-CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-14-25_80_3classp01/'
+CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-26-25_80_3classp01_all_pt2/'
 CONFIG_NAME = 'default'
-USE_STREAMING = False  # ← TOGGLE THIS to switch modes
+USE_STREAMING = True  # ← TOGGLE THIS to switch modes
 
 # =========== LOAD TRAINING/VAL/TEST DATA ==========
 if USE_STREAMING:
@@ -142,9 +143,11 @@ config['freeze_pretrained'] = False  # Freeze backbone, only train classificatio
 
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
+#config['recognition_model_lr'] = 3e-5
 config['recognition_model_lr'] = 1e-5
-config['recognition_model_epochs'] = 3
-config['recognition_model_batch_size'] = 16
+#config['recognition_model_epochs'] = 2
+config['recognition_model_epochs'] = 9
+config['recognition_model_batch_size'] = 64
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
 config['recognition_model_optimizer'] = 'adam'
