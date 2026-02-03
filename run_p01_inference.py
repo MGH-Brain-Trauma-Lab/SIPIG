@@ -27,8 +27,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ============================================================================
 
 # Paths
-EXTRACTION_ROOT = "/media/tbiinterns/P01-X/pig_behavior_extraction"
-METADATA_CSV = f"{EXTRACTION_ROOT}/metadata/extraction_master.csv"
+EXTRACTION_ROOT = "/media/tbiinterns/P01-X/all_mad_inference"
+METADATA_CSV = f"{EXTRACTION_ROOT}/metadata/extraction_master_mad_filled.csv"
 
 # Model input size (must match training config)
 # **USER: VERIFY THIS MATCHES YOUR MODEL'S TRAINING CONFIG**
@@ -224,7 +224,7 @@ class MetadataHandler:
             reader = csv.DictReader(f)
             
             # Verify expected columns exist
-            expected_cols = {'frame_path', 'pig_id', 'pen', 'date', 'week_number'}
+            expected_cols = {'frame_path', 'pig_id', 'pen', 'date'}
             if not expected_cols.issubset(reader.fieldnames):
                 missing = expected_cols - set(reader.fieldnames)
                 raise ValueError(f"Missing required columns in CSV: {missing}")
