@@ -778,7 +778,7 @@ def pretrained_recognition(
                 x = Conv2D(3, kernel_size=(1, 1), strides=(1, 1))(new_input)
                 x = backbone(x)
                 x = BatchNormalization()(x)
-                x = Dropout(0.25)(x)
+                x = Dropout(0.5)(x)
                 x = Dense(num_classes)(x)
                 x = Activation("softmax")(x)
                 
@@ -934,6 +934,9 @@ def pretrained_recognition(
             # x = Dropout(dout)(x)
             # x = Dense(64)(x)
             # x = Activation('relu')(x)
+        if model_name == "mobilenet":
+            dout = 0.7
+            x = Dropout(dout)(x)
         x = Dense(num_classes)(x)
         x = Activation("softmax")(x)
 
