@@ -2,10 +2,13 @@
 Inference script for pig behavior classification on extracted frames.
 Streams frames through model, saves logits (not classifications) to metadata CSV.
 
+NEW: Resumable with automatic checkpointing every 128k frames.
+
 Usage:
     python inference_pig_behavior_frames.py --checkpoint path/to/model.h5
     python inference_pig_behavior_frames.py --checkpoint checkpoints/model.h5 --batch-size 64
     python inference_pig_behavior_frames.py --checkpoint model.h5 --workers 4 --debug
+    python inference_pig_behavior_frames.py --checkpoint model.h5 --resume  # Continue from last checkpoint
 """
 import os
 import sys
@@ -16,10 +19,11 @@ import numpy as np
 import tensorflow as tf
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Optional
 import cv2
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import shutil
 
 
 # ============================================================================
@@ -28,7 +32,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Paths
 EXTRACTION_ROOT = "/media/tbiinterns/P01-X/all_mad_inference"
-METADATA_CSV = f"{EXTRACTION_ROOT}/metadata/extraction_master_mad_filled.csv"
+METADATA_CSV = f"{EXTRACTION_ROOT}/metadata/extraction_master_side.csv"
 
 # Model input size (must match training config)
 # **USER: VERIFY THIS MATCHES YOUR MODEL'S TRAINING CONFIG**
@@ -44,6 +48,9 @@ BATCH_SIZE = 32
 
 # Parallel frame loading
 NUM_WORKERS = 4  # Threads for loading images
+
+# Checkpoint interval (save progress every N frames)
+CHECKPOINT_INTERVAL = 128000  # 4,000 batches × 32 frames = ~30 minutes
 
 
 # ============================================================================
@@ -236,17 +243,40 @@ class MetadataHandler:
         
         return metadata
     
+    def find_last_processed_index(self, metadata: List[Dict]) -> int:
+        """
+        Find the index of the last frame that has logits.
+        
+        Args:
+            metadata: List of metadata dicts
+            
+        Returns:
+            Index of last processed frame (-1 if none processed)
+        """
+        for i in range(len(metadata) - 1, -1, -1):
+            row = metadata[i]
+            # Check if logits exist and are not NaN
+            if all(key in row for key in ['logit_0', 'logit_1', 'logit_2']):
+                if row['logit_0'] and row['logit_0'] != 'NaN' and row['logit_0'].strip():
+                    self.logger.info(f"Found last processed frame at index {i}")
+                    return i
+        
+        self.logger.info("No processed frames found (starting from scratch)")
+        return -1
+    
     def save_metadata_with_logits(
         self,
         metadata: List[Dict],
-        output_path: str = None
+        output_path: str = None,
+        atomic: bool = True
     ):
         """
-        Save metadata with logits to new CSV.
+        Save metadata with logits to CSV (atomically to prevent corruption).
         
         Args:
             metadata: List of metadata dicts (must include logit_0, logit_1, logit_2)
             output_path: Where to save (default: overwrite original)
+            atomic: Use atomic write (write to temp file, then rename)
         """
         if output_path is None:
             output_path = self.metadata_path
@@ -255,16 +285,28 @@ class MetadataHandler:
         if metadata and 'logit_0' not in metadata[0]:
             raise ValueError("Metadata missing logit columns")
         
-        # Get all fieldnames (preserve order, add logits at end)
+        # Get all fieldnames (preserve order, add logits at end if not present)
         fieldnames = list(metadata[0].keys())
         
-        # Write CSV
-        with open(output_path, 'w', newline='') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(metadata)
+        # Write to temp file first (atomic operation)
+        if atomic:
+            temp_path = output_path + '.tmp'
+            
+            with open(temp_path, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(metadata)
+            
+            # Atomic rename
+            shutil.move(temp_path, output_path)
+        else:
+            # Direct write
+            with open(output_path, 'w', newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(metadata)
         
-        self.logger.info(f"Saved metadata with logits: {output_path}")
+        self.logger.debug(f"Saved metadata with logits: {output_path}")
 
 
 # ============================================================================
@@ -384,6 +426,8 @@ def run_inference(
     metadata_path: str = METADATA_CSV,
     batch_size: int = BATCH_SIZE,
     num_workers: int = NUM_WORKERS,
+    checkpoint_interval: int = CHECKPOINT_INTERVAL,
+    resume: bool = False,
     debug: bool = False
 ) -> str:
     """
@@ -394,6 +438,8 @@ def run_inference(
         metadata_path: Path to extraction metadata CSV
         batch_size: Inference batch size
         num_workers: Parallel frame loading threads
+        checkpoint_interval: Save progress every N frames
+        resume: Continue from last checkpoint
         debug: Enable debug logging
         
     Returns:
@@ -402,12 +448,14 @@ def run_inference(
     logger = setup_logging(debug=debug)
     
     logger.info("="*80)
-    logger.info("PIG BEHAVIOR INFERENCE")
+    logger.info("PIG BEHAVIOR INFERENCE (RESUMABLE)")
     logger.info("="*80)
     logger.info(f"Model: {checkpoint_path}")
     logger.info(f"Metadata: {metadata_path}")
     logger.info(f"Batch size: {batch_size}")
     logger.info(f"Workers: {num_workers}")
+    logger.info(f"Checkpoint interval: {checkpoint_interval:,} frames")
+    logger.info(f"Resume mode: {'ON' if resume else 'OFF'}")
     logger.info("="*80)
     
     # Initialize components
@@ -423,19 +471,43 @@ def run_inference(
     metadata = metadata_handler.load_metadata()
     total_frames = len(metadata)
     
-    logger.info(f"  Total frames to process: {total_frames}")
-    logger.info(f"  Estimated batches: {(total_frames + batch_size - 1) // batch_size}")
+    # Determine starting point
+    start_idx = 0
+    if resume:
+        last_processed = metadata_handler.find_last_processed_index(metadata)
+        start_idx = last_processed + 1
+        
+        if start_idx >= total_frames:
+            logger.info("\n✓ All frames already processed!")
+            return metadata_path
+        
+        logger.info(f"\nResuming from frame {start_idx:,} / {total_frames:,}")
+        logger.info(f"  Remaining: {total_frames - start_idx:,} frames")
+    else:
+        # Initialize logit columns if not present
+        for row in metadata:
+            if 'logit_0' not in row:
+                row['logit_0'] = ''
+                row['logit_1'] = ''
+                row['logit_2'] = ''
     
-    # Process frames in batches
+    frames_to_process = total_frames - start_idx
+    logger.info(f"\nFrames to process: {frames_to_process:,}")
+    logger.info(f"Estimated batches: {(frames_to_process + batch_size - 1) // batch_size:,}")
+    logger.info(f"Checkpoints: every {checkpoint_interval:,} frames")
+    
+    # Process frames in batches with checkpointing
     logger.info("\nRunning inference...")
     
     processed = 0
     failed = 0
+    frames_since_checkpoint = 0
     
-    with tqdm(total=total_frames, desc="Processing frames", unit="frame") as pbar:
-        for batch_start in range(0, total_frames, batch_size):
+    with tqdm(total=frames_to_process, desc="Processing frames", unit="frame") as pbar:
+        for batch_start in range(start_idx, total_frames, batch_size):
             batch_end = min(batch_start + batch_size, total_frames)
             batch_metadata = metadata[batch_start:batch_end]
+            batch_size_actual = batch_end - batch_start
             
             # Get frame paths
             frame_paths = [row['frame_path'] for row in batch_metadata]
@@ -469,26 +541,33 @@ def run_inference(
                     row['logit_0'] = "NaN"
                     row['logit_1'] = "NaN"
                     row['logit_2'] = "NaN"
-                    failed += len(batch_metadata)
+                failed += batch_size_actual
             
-            pbar.update(len(batch_metadata))
+            pbar.update(batch_size_actual)
+            frames_since_checkpoint += batch_size_actual
+            
+            # Checkpoint if interval reached
+            if frames_since_checkpoint >= checkpoint_interval:
+                logger.info(f"\n  ↓ Checkpoint: saving progress at frame {batch_end:,}...")
+                metadata_handler.save_metadata_with_logits(metadata, metadata_path)
+                logger.info(f"  ✓ Saved! GPU staying warm, continuing...")
+                frames_since_checkpoint = 0
     
-    # Save results
-    logger.info("\nSaving results...")
-    output_path = metadata_path.replace('.csv', '_with_logits.csv')
-    metadata_handler.save_metadata_with_logits(metadata, output_path)
+    # Final save
+    logger.info("\n  ↓ Final save...")
+    metadata_handler.save_metadata_with_logits(metadata, metadata_path)
     
     # Summary
     logger.info("\n" + "="*80)
     logger.info("INFERENCE COMPLETE")
     logger.info("="*80)
-    logger.info(f"Total frames: {total_frames}")
-    logger.info(f"  Successful: {processed}")
-    logger.info(f"  Failed: {failed}")
-    logger.info(f"Output: {output_path}")
+    logger.info(f"Total frames processed: {processed:,}")
+    logger.info(f"  Successful: {processed:,}")
+    logger.info(f"  Failed: {failed:,}")
+    logger.info(f"Output: {metadata_path}")
     logger.info("="*80)
     
-    return output_path
+    return metadata_path
 
 
 # ============================================================================
@@ -498,13 +577,28 @@ def run_inference(
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
-        description='Run inference on extracted pig behavior frames',
+        description='Run inference on extracted pig behavior frames (resumable)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Start fresh
   python inference_pig_behavior_frames.py --checkpoint model.h5
+  
+  # Resume from last checkpoint
+  python inference_pig_behavior_frames.py --checkpoint model.h5 --resume
+  
+  # Custom settings
   python inference_pig_behavior_frames.py --checkpoint checkpoints/model.h5 --batch-size 64
   python inference_pig_behavior_frames.py --checkpoint model.h5 --workers 8 --debug
+  
+  # Custom checkpoint interval (default: 128,000 frames)
+  python inference_pig_behavior_frames.py --checkpoint model.h5 --checkpoint-interval 256000
+
+Notes:
+  - Progress is saved every 128,000 frames (~30 minutes)
+  - GPU stays loaded between checkpoints (minimal overhead)
+  - Use --resume to continue if interrupted
+  - Checkpoints are atomic (safe from corruption)
         """
     )
     
@@ -537,6 +631,19 @@ Examples:
     )
     
     parser.add_argument(
+        '--checkpoint-interval',
+        type=int,
+        default=CHECKPOINT_INTERVAL,
+        help=f'Save progress every N frames (default: {CHECKPOINT_INTERVAL:,})'
+    )
+    
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Resume from last checkpoint (skip already-processed frames)'
+    )
+    
+    parser.add_argument(
         '--debug',
         action='store_true',
         help='Enable debug logging'
@@ -551,6 +658,8 @@ Examples:
             metadata_path=args.metadata,
             batch_size=args.batch_size,
             num_workers=args.workers,
+            checkpoint_interval=args.checkpoint_interval,
+            resume=args.resume,
             debug=args.debug
         )
         
