@@ -4,17 +4,20 @@
 # ============================================================
 
 # ===================== RANDOM SEED ==========================
-seed = 388105
-
+# seed = 388105 #no-streaming batch 16 0.00001
+#seed = 931165
+seed = None
 # ==================== DATA PATHS ============================
-clips_output_dir = /home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-14-25_80_3classp01/
+#clips_output_dir = /home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-14-25_80_3classp01/
+clips_output_dir = /home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-26-25_80_3classp01_all_pt2/
+#clips_output_dir = /home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-26-25_80_3classp01_all_topview/
 # clips_output_dir = /home/tbiinterns/Desktop/semiology_ml/training_data/temporal_extraction/temporal_split_5min_1fps_petite/
 
 framerate = 1
 greyscale = False
 
 # ================= DATA LOADING MODE ========================
-use_streaming = False
+use_streaming = True
 use_generator = True
 
 # ================ DATA PREPROCESSING ========================
@@ -38,9 +41,9 @@ freeze_pretrained = False
 
 # ============ RECOGNITION MODEL TRAINING ====================
 train_recognition_model = True
-recognition_model_epochs = 5
-recognition_model_batch_size = 16
-recognition_model_lr = 0.00001
+recognition_model_epochs = 50
+recognition_model_batch_size = 64
+recognition_model_lr = 0.00003 #0.00001
 recognition_model_optimizer = adam
 recognition_model_loss = focal_loss
 
