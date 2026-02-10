@@ -50,6 +50,22 @@ def train_behavior(
         pretrained_weights_path=config.get("pretrained_weights_path", None),
         freeze_pretrained=config.get("freeze_pretrained", False),
     )
+    # ========== ADD THIS DEBUG CODE ==========
+    print("\n" + "="*80)
+    print("MODEL ARCHITECTURE CHECK")
+    print("="*80)
+    our_model.recognition_model.summary()
+
+    has_dropout = False
+    for layer in our_model.recognition_model.layers:
+        if 'dropout' in layer.name.lower():
+            print(f"✓ Found dropout layer: {layer.name} - rate: {layer.rate if hasattr(layer, 'rate') else 'N/A'}")
+            has_dropout = True
+
+    if not has_dropout:
+        print("❌ WARNING: NO DROPOUT LAYERS FOUND IN MODEL!")
+    print("="*80 + "\n")
+    # =========================================
 
     our_model.set_class_weight(class_weights)
 
@@ -82,7 +98,7 @@ def train_behavior(
                     augmentation=None,
                     normalize=True,
                     mode='recognition',
-                    frames_per_video=50,
+                    frames_per_video=10,
                 )
                 dataloader.validation_generator = StreamingDataGenerator(
                     clip_paths=dataloader.val_paths,
@@ -97,10 +113,31 @@ def train_behavior(
                     mode='recognition',
                     frames_per_video=1,  # ← Keep at 1 for consistent validation
                 )
+                
+                # ============ ADD THIS ============
+                print(f"\n{'='*70}")
+                print(f"VALIDATION GENERATOR DEBUG")
+                print(f"{'='*70}")
+                print(f"Number of validation videos: {len(dataloader.val_paths)}")
+                print(f"Batch size: {config['recognition_model_batch_size']}")
+                print(f"Frames per video: 1")
+                print(f"Expected samples per batch: {config['recognition_model_batch_size']}")
+                print(f"Number of batches: {len(dataloader.validation_generator)}")
+                print(f"Total expected samples: {len(dataloader.validation_generator) * config['recognition_model_batch_size']}")
+
+                # Test load first batch
+                print(f"\nTesting first batch load...")
+                try:
+                    test_x, test_y = dataloader.validation_generator[0]
+                    print(f"✓ First batch shape: {test_x.shape}")
+                except Exception as e:
+                    print(f"✗ Failed to load first batch: {e}")
+                print(f"{'='*70}\n")
+                # =============
 
                 # Create validation subset for metrics
                 print("Creating validation subset for metrics...")
-                val_batches_to_load = min(10, len(dataloader.validation_generator))
+                val_batches_to_load = len(dataloader.validation_generator)
                 x_val_list = []
                 y_val_list = []
 
