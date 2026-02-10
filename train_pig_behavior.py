@@ -20,8 +20,8 @@ import random
 
 # =========== SET SEED ==========
 #SEED = 388105
-SEED = 931165 # Change this to whatever you want, or set to None for random
-#SEED = None  # Uncomment this line for random seed
+#SEED = 931165 # Change this to whatever you want, or set to None for random
+SEED = None  # Uncomment this line for random seed
 
 if SEED is None:
     SEED = random.randint(0, 999999)
@@ -70,7 +70,8 @@ if gpus:
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/temporal_extraction/temporal_split_5min_1fps_petite/'
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_topview_200/'
 #CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/stride_temporal_split_5min_1fps_jan6_max154_lying/'
-CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-26-25_80_3classp01_all_pt2/'
+# CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-26-25_80_3classp01_all_pt2/'
+CLIPS_OUTPUT_DIR = '/home/tbiinterns/Desktop/semiology_ml/training_data/02.06.26_CURE_3class/'
 CONFIG_NAME = 'default'
 USE_STREAMING = True  # ← TOGGLE THIS to switch modes
 
@@ -141,14 +142,14 @@ config['num_classes'] = 3
 # Pretrained Recognition Model Parameters
 config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5'
 #config['pretrained_weights_path'] = '../simclr/training/simclr_checkpoints_minimal_aug_200/encoder_epoch_100.h5'
-config['freeze_pretrained'] = False  # Freeze backbone, only train classification head
+config['freeze_pretrained'] = True  # Freeze backbone, only train classification head
 
 # Recognition Model Parameters
 config['train_recognition_model'] = True  # Force boolean
-#config['recognition_model_lr'] = 3e-5
-config['recognition_model_lr'] = 1e-5
-#config['recognition_model_epochs'] = 2
-config['recognition_model_epochs'] = 9
+config['recognition_model_lr'] = 3e-5
+#config['recognition_model_lr'] = 1e-5
+config['recognition_model_epochs'] = 20
+#config['recognition_model_epochs'] = 9
 config['recognition_model_batch_size'] = 64
 config['backbone'] = 'mobilenet'
 # config['backbone'] = 'xception'
@@ -360,7 +361,7 @@ wandb.log({
 if USE_STREAMING:
     # Load validation subset from generator
     print("Loading validation data for final evaluation...")
-    val_batches = min(10, len(dataloader.validation_generator))
+    val_batches = len(dataloader.validation_generator)
     val_x = []
     val_y = []
     for i in range(val_batches):
@@ -427,7 +428,7 @@ plt.close(fig)
 
 # Save model
 now = datetime.now().strftime("%m-%d-%Y_%HH-%MM-%SS")
-name = f'pig_behavior_model_{now}_seed{SEED}.h5'
+name = f'pig_behavior_model_{now}_seed{SEED}_CURE.h5'
 model.recognition_model.save(name)
 print(f"\nModel saved to: {name}")
 print(f"Seed used: {SEED}")
