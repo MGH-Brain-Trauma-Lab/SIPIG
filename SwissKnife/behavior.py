@@ -37,6 +37,7 @@ def train_behavior(
     num_classes,
     encode_labels=True,
     class_weights=None,
+    checkpoint_callback=None,
 ):
     print("data prepared!")
 
@@ -111,7 +112,7 @@ def train_behavior(
                     augmentation=None,
                     normalize=True,
                     mode='recognition',
-                    frames_per_video=1,  # ← Keep at 1 for consistent validation
+                    frames_per_video=5,  # ← Keep at 1 for consistent validation
                 )
                 
                 # ============ ADD THIS ============
@@ -120,7 +121,7 @@ def train_behavior(
                 print(f"{'='*70}")
                 print(f"Number of validation videos: {len(dataloader.val_paths)}")
                 print(f"Batch size: {config['recognition_model_batch_size']}")
-                print(f"Frames per video: 1")
+                print(f"Frames per video: (look for yourself)")  # ← CHANGE THIS
                 print(f"Expected samples per batch: {config['recognition_model_batch_size']}")
                 print(f"Number of batches: {len(dataloader.validation_generator)}")
                 print(f"Total expected samples: {len(dataloader.validation_generator) * config['recognition_model_batch_size']}")
@@ -138,18 +139,25 @@ def train_behavior(
                 # Create validation subset for metrics
                 print("Creating validation subset for metrics...")
                 val_batches_to_load = len(dataloader.validation_generator)
-                x_val_list = []
-                y_val_list = []
 
-                for i in range(val_batches_to_load):
-                    batch_x, batch_y = dataloader.validation_generator[i]
-                    x_val_list.append(batch_x)
-                    y_val_list.append(batch_y)
+                if val_batches_to_load == 0:
+                    print("WARNING: No validation data available!")
+                    x_val_subset = None
+                    y_val_subset = None
+                else:
+                    x_val_list = []
+                    y_val_list = []
 
-                x_val_subset = np.concatenate(x_val_list, axis=0)
-                y_val_subset = np.concatenate(y_val_list, axis=0)
+                    from tqdm import tqdm  # Import tqdm
+                    for i in tqdm(range(val_batches_to_load), desc="Loading validation batches"):
+                        batch_x, batch_y = dataloader.validation_generator[i]
+                        x_val_list.append(batch_x)
+                        y_val_list.append(batch_y)
 
-                print(f"Validation subset for metrics: {x_val_subset.shape}")
+                    x_val_subset = np.concatenate(x_val_list, axis=0)
+                    y_val_subset = np.concatenate(y_val_list, axis=0)
+
+                    print(f"Validation subset for metrics: {x_val_subset.shape}")
 
             else:
                 # Traditional DataGenerator
@@ -206,6 +214,11 @@ def train_behavior(
             # use standard training callback
             CB_es, CB_lr = callbacks_learningRate_plateau()
             our_model.add_callbacks([CB_es, CB_lr])
+            
+        # ============ ADD CHECKPOINT CALLBACK IF PROVIDED ============
+        if checkpoint_callback is not None:
+            our_model.add_callbacks([checkpoint_callback])
+            print(f"✓ Added checkpoint callback")
 
         # ============ ACTUALLY TRAIN ============
         our_model.recognition_model_epochs = config["recognition_model_epochs"]

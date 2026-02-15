@@ -70,7 +70,6 @@ def parse_via_video_json_for_clip(json_data, clip_filename, framerate):
     return labels
 
 
-
 def load_clips_from_directory(clips_dir, annotations_json, framerate=1, greyscale=False):
     """
     Load all video clips from a directory and their corresponding labels.
@@ -166,7 +165,8 @@ def load_clips_from_directory(clips_dir, annotations_json, framerate=1, greyscal
 
 
 def load_training_data(output_dir, annotations_filename='annotations.json', 
-                       framerate=1, greyscale=False, combine_val_test=False):
+                       framerate=1, greyscale=False,
+                       train_splits=None, val_splits=None, test_splits=None):
     """
     Load train, val, and test data from clip extraction output directory.
     
@@ -175,96 +175,103 @@ def load_training_data(output_dir, annotations_filename='annotations.json',
         annotations_filename: Name of the JSON annotations file
         framerate: Frame rate of clips (default 1 fps)
         greyscale: Whether to load as greyscale
-        combine_val_test: If True, combine val and test into a single validation set
+        train_splits: List of splits to combine for training (e.g., ['train', 'val'])
+        val_splits: List of splits to combine for validation (e.g., ['test'])
+        test_splits: List of splits to combine for testing (e.g., None or [])
+        
+        If all are None, defaults to standard split: train/val/test separately
     
     Returns:
         dict with keys: 'train', 'val', 'test'
         Each value is a tuple of (x, y) arrays
     """
+    # Default to standard split if not specified
+    if train_splits is None and val_splits is None and test_splits is None:
+        train_splits = ['train']
+        val_splits = ['val']
+        test_splits = ['test']
+    
+    # Convert None to empty list
+    if train_splits is None:
+        train_splits = []
+    if val_splits is None:
+        val_splits = []
+    if test_splits is None:
+        test_splits = []
+        
+    # Convert strings to lists if needed (config parser might return strings)
+    if isinstance(train_splits, str):
+        train_splits = [s.strip() for s in train_splits.split(',') if s.strip()]
+    if isinstance(val_splits, str):
+        val_splits = [s.strip() for s in val_splits.split(',') if s.strip()]
+    if isinstance(test_splits, str):
+        test_splits = [s.strip() for s in test_splits.split(',') if s.strip()]
+    
     annotations_path = os.path.join(output_dir, annotations_filename)
     
     if not os.path.exists(annotations_path):
         raise FileNotFoundError(f"Annotations file not found: {annotations_path}")
     
-    data = {}
+    # Load all original splits
+    all_splits = {}
+    for split_name in ['train', 'val', 'test']:
+        split_dir = os.path.join(output_dir, split_name)
+        if os.path.exists(split_dir) and os.listdir(split_dir):
+            print("\n" + "="*80)
+            print(f"LOADING {split_name.upper()} DATA")
+            print("="*80)
+            x, y = load_clips_from_directory(
+                split_dir, annotations_path, framerate, greyscale
+            )
+            all_splits[split_name] = (x, y)
+        else:
+            all_splits[split_name] = (np.array([]), np.array([]))
     
-    # Load train
-    train_dir = os.path.join(output_dir, 'train')
-    if os.path.exists(train_dir):
-        print("\n" + "="*80)
-        print("LOADING TRAINING DATA")
-        print("="*80)
-        x_train, y_train = load_clips_from_directory(
-            train_dir, annotations_path, framerate, greyscale
-        )
-        data['train'] = (x_train, y_train)
-    
-    if combine_val_test:
-        # Combine val and test into single validation set
-        print("\n" + "="*80)
-        print("COMBINING VAL + TEST INTO SINGLE VALIDATION SET")
-        print("="*80)
-        
-        val_dir = os.path.join(output_dir, 'val')
-        test_dir = os.path.join(output_dir, 'test')
+    # Combine splits according to specification
+    def combine_splits(split_list):
+        """Combine multiple original splits into one"""
+        if not split_list or split_list == []:
+            return np.array([]), np.array([])
         
         x_combined = []
         y_combined = []
         
-        if os.path.exists(val_dir) and os.listdir(val_dir):
-            print("Loading val data...")
-            x_val, y_val = load_clips_from_directory(
-                val_dir, annotations_path, framerate, greyscale
-            )
-            x_combined.append(x_val)
-            y_combined.append(y_val)
-        
-        if os.path.exists(test_dir):
-            print("Loading test data...")
-            x_test, y_test = load_clips_from_directory(
-                test_dir, annotations_path, framerate, greyscale
-            )
-            x_combined.append(x_test)
-            y_combined.append(y_test)
+        for split_name in split_list:
+            if split_name in all_splits:
+                x, y = all_splits[split_name]
+                if len(x) > 0:
+                    x_combined.append(x)
+                    y_combined.append(y)
         
         if x_combined:
-            x_combined = np.vstack(x_combined)
-            y_combined = np.hstack(y_combined)
-            
-            print(f"\nCombined validation set: {len(x_combined)} frames")
-            data['val'] = (x_combined, y_combined)
-            data['test'] = (x_combined, y_combined)  # Same as val
+            return np.vstack(x_combined), np.hstack(y_combined)
         else:
-            print("WARNING: No val or test data found!")
-            data['val'] = (np.array([]), np.array([]))
-            data['test'] = (np.array([]), np.array([]))
+            return np.array([]), np.array([])
     
-    else:
-        # Load val and test separately (original behavior)
-        val_dir = os.path.join(output_dir, 'val')
-        if os.path.exists(val_dir) and os.listdir(val_dir):
-            print("\n" + "="*80)
-            print("LOADING VALIDATION DATA")
-            print("="*80)
-            x_val, y_val = load_clips_from_directory(
-                val_dir, annotations_path, framerate, greyscale
-            )
-            data['val'] = (x_val, y_val)
-        
-        test_dir = os.path.join(output_dir, 'test')
-        if os.path.exists(test_dir):
-            print("\n" + "="*80)
-            print("LOADING TEST DATA")
-            print("="*80)
-            x_test, y_test = load_clips_from_directory(
-                test_dir, annotations_path, framerate, greyscale
-            )
-            data['test'] = (x_test, y_test)
+    # Create final splits
+    print("\n" + "="*80)
+    print("COMBINING SPLITS")
+    print("="*80)
+    
+    x_train, y_train = combine_splits(train_splits)
+    x_val, y_val = combine_splits(val_splits)
+    x_test, y_test = combine_splits(test_splits)
+    
+    print(f"Training set: {train_splits} → {len(x_train)} frames")
+    print(f"Validation set: {val_splits} → {len(x_val)} frames")
+    print(f"Test set: {test_splits} → {len(x_test)} frames")
+    
+    data = {
+        'train': (x_train, y_train),
+        'val': (x_val, y_val),
+        'test': (x_test, y_test)
+    }
     
     return data
 
 
-def load_training_metadata(clips_output_dir, framerate=1, combine_val_test=False):
+def load_training_metadata(clips_output_dir, framerate=1, 
+                          train_splits=None, val_splits=None, test_splits=None):
     """
     Load video file paths and labels without loading actual frames.
     Supports .mp4, .avi video files.
@@ -272,7 +279,11 @@ def load_training_metadata(clips_output_dir, framerate=1, combine_val_test=False
     Args:
         clips_output_dir: Base directory with train/val/test subdirs
         framerate: Frame rate (not used but kept for compatibility)
-        combine_val_test: If True, combine val and test into single validation set
+        train_splits: List of splits to combine for training (e.g., ['train', 'val'])
+        val_splits: List of splits to combine for validation (e.g., ['test'])
+        test_splits: List of splits to combine for testing (e.g., None or [])
+        
+        If all are None, defaults to standard split: train/val/test separately
     
     Returns:
         dict with keys 'train', 'val', 'test'
@@ -282,10 +293,33 @@ def load_training_metadata(clips_output_dir, framerate=1, combine_val_test=False
     import re
     from glob import glob
     
+    # Default to standard split if not specified
+    if train_splits is None and val_splits is None and test_splits is None:
+        train_splits = ['train']
+        val_splits = ['val']
+        test_splits = ['test']
+    
+    # Convert None to empty list
+    if train_splits is None:
+        train_splits = []
+    if val_splits is None:
+        val_splits = []
+    if test_splits is None:
+        test_splits = []
+        
+    # Convert strings to lists if needed (config parser might return strings)
+    if isinstance(train_splits, str):
+        train_splits = [s.strip() for s in train_splits.split(',') if s.strip()]
+    if isinstance(val_splits, str):
+        val_splits = [s.strip() for s in val_splits.split(',') if s.strip()]
+    if isinstance(test_splits, str):
+        test_splits = [s.strip() for s in test_splits.split(',') if s.strip()]
+    
     print(f"\n{'='*70}")
     print(f"LOADING METADATA FROM: {clips_output_dir}")
-    if combine_val_test:
-        print(f"MODE: COMBINING VAL + TEST")
+    print(f"Train splits: {train_splits}")
+    print(f"Val splits: {val_splits}")
+    print(f"Test splits: {test_splits}")
     print(f"{'='*70}")
     
     # Check base directory
@@ -334,25 +368,49 @@ def load_training_metadata(clips_output_dir, framerate=1, combine_val_test=False
             filename = os.path.basename(path)
             name_without_ext = os.path.splitext(filename)[0]
             parts = name_without_ext.split('_')
-            
+
             try:
-                if len(parts) >= 2 and parts[-2] == 'chunk':
-                    label = parts[-3]
-                elif len(parts) >= 1:
-                    behavior_keywords = ['lying-asleep', 'lying-awake', 'upright', 'obstructed', 
-                                        'lying_asleep', 'lying_awake', 'lying', 'asleep', 'awake']
-                    
-                    for part in reversed(parts):
-                        if part.lower() in behavior_keywords or any(kw in part.lower() for kw in behavior_keywords):
-                            label = part
-                            break
+                # Look for behavior keywords
+                behavior_keywords = ['lying-asleep', 'lying-awake', 'upright', 'obstructed']
+                label = 'unknown'
+
+                # Pattern 1: sideview format - behavior_chunk_##
+                # Pattern 2: topview format - behavior_topview_chunk_##
+
+                # Find 'chunk' position
+                chunk_idx = None
+                for i, part in enumerate(parts):
+                    if part == 'chunk':
+                        chunk_idx = i
+                        break
+
+                if chunk_idx is not None:
+                    # Check if topview/sideview is present
+                    if chunk_idx >= 2 and parts[chunk_idx - 1] in ['topview', 'sideview']:
+                        # Format: ...behavior_topview_chunk_##
+                        candidate = parts[chunk_idx - 2]
+                    elif chunk_idx >= 1:
+                        # Format: ...behavior_chunk_##
+                        candidate = parts[chunk_idx - 1]
                     else:
-                        label = parts[-2] if len(parts) > 1 else parts[0]
-                else:
-                    label = 'unknown'
-                
-                label = label.replace('-', ' ')
-                label = label.strip().lower()
+                        candidate = None
+
+                    if candidate:
+                        candidate_lower = candidate.lower()
+                        # Direct match or contains behavior keyword
+                        if candidate_lower in behavior_keywords:
+                            label = candidate_lower.replace('-', ' ')
+                        elif any(kw.replace('-', '') in candidate_lower for kw in behavior_keywords):
+                            label = candidate_lower.replace('-', ' ')
+
+                # Fallback: search all parts for behavior keywords
+                if label == 'unknown':
+                    for part in parts:
+                        part_lower = part.lower()
+                        if part_lower in behavior_keywords:
+                            label = part_lower.replace('-', ' ')
+                            break
+
                 labels.append(label)
             except Exception as e:
                 print(f"  ⚠ Error extracting label from {filename}: {e}")
@@ -370,58 +428,78 @@ def load_training_metadata(clips_output_dir, framerate=1, combine_val_test=False
         
         return video_files, labels
     
-    # Load train
-    train_dir = os.path.join(clips_output_dir, 'train')
-    train_paths, train_labels = load_split('train', train_dir)
+    # Load all original splits
+    all_splits = {}
+    for split_name in ['train', 'val', 'test']:
+        split_dir = os.path.join(clips_output_dir, split_name)
+        if os.path.exists(split_dir):
+            paths, labels = load_split(split_name, split_dir)
+            all_splits[split_name] = (paths, labels)
+        else:
+            all_splits[split_name] = ([], [])
     
-    if combine_val_test:
-        # Combine val and test
-        print(f"\n{'='*70}")
-        print("COMBINING VAL + TEST")
-        print(f"{'='*70}")
+    # Combine splits according to specification
+    def combine_splits(split_list):
+        """Combine multiple original splits into one"""
+        if not split_list or split_list == []:
+            return [], []
         
-        val_dir = os.path.join(clips_output_dir, 'val')
-        test_dir = os.path.join(clips_output_dir, 'test')
+        combined_paths = []
+        combined_labels = []
         
-        val_paths, val_labels = load_split('val', val_dir)
-        test_paths, test_labels = load_split('test', test_dir)
+        for split_name in split_list:
+            if split_name in all_splits:
+                paths, labels = all_splits[split_name]
+                combined_paths.extend(paths)
+                combined_labels.extend(labels)
         
-        # Combine
-        combined_paths = val_paths + test_paths
-        combined_labels = val_labels + test_labels
-        
-        print(f"\n{'─'*70}")
-        print(f"COMBINED VALIDATION SET")
-        print(f"  Val clips: {len(val_paths)}")
-        print(f"  Test clips: {len(test_paths)}")
-        print(f"  Total: {len(combined_paths)}")
-        print(f"{'─'*70}")
-        
-        from collections import Counter
-        if combined_labels:
-            combined_dist = Counter(combined_labels)
-            print(f"  Combined label distribution:")
-            for label, count in sorted(combined_dist.items()):
-                print(f"    {label}: {count}")
-        
-        data = {
-            'train': (train_paths, train_labels),
-            'val': (combined_paths, combined_labels),
-            'test': (combined_paths, combined_labels)  # Same as val
-        }
-    else:
-        # Load separately
-        val_dir = os.path.join(clips_output_dir, 'val')
-        test_dir = os.path.join(clips_output_dir, 'test')
-        
-        val_paths, val_labels = load_split('val', val_dir)
-        test_paths, test_labels = load_split('test', test_dir)
-        
-        data = {
-            'train': (train_paths, train_labels),
-            'val': (val_paths, val_labels),
-            'test': (test_paths, test_labels)
-        }
+        return combined_paths, combined_labels
+    
+    # Create final splits
+    train_paths, train_labels = combine_splits(train_splits)
+    print(f"\nDEBUG AFTER COMBINE:")
+    print(f"  train_splits input: {train_splits}")
+    print(f"  train_paths result: {len(train_paths)}")
+    print(f"  all_splits keys: {all_splits.keys()}")
+    print(f"  all_splits['train'] length: {len(all_splits.get('train', [[]])[0])}")
+    val_paths, val_labels = combine_splits(val_splits)
+    test_paths, test_labels = combine_splits(test_splits)
+    
+    # Print summary
+    print(f"\n{'='*70}")
+    print(f"FINAL SPLIT CONFIGURATION")
+    print(f"{'='*70}")
+    print(f"Training set: {train_splits} → {len(train_paths)} clips")
+    print(f"Validation set: {val_splits} → {len(val_paths)} clips")
+    print(f"Test set: {test_splits} → {len(test_paths)} clips")
+    
+    # Print label distributions for final splits
+    from collections import Counter
+    if train_labels:
+        train_dist = Counter(train_labels)
+        print(f"\nTraining label distribution:")
+        for label, count in sorted(train_dist.items()):
+            print(f"  {label}: {count}")
+    
+    if val_labels:
+        val_dist = Counter(val_labels)
+        print(f"\nValidation label distribution:")
+        for label, count in sorted(val_dist.items()):
+            print(f"  {label}: {count}")
+    
+    if test_labels:
+        test_dist = Counter(test_labels)
+        print(f"\nTest label distribution:")
+        for label, count in sorted(test_dist.items()):
+            print(f"  {label}: {count}")
+    
+    print(f"{'='*70}\n")
+    
+    data = {
+        'train': (train_paths, train_labels),
+        'val': (val_paths, val_labels),
+        'test': (test_paths, test_labels)
+    }
     
     print(f"\n{'='*70}")
     print(f"METADATA LOADING COMPLETE")

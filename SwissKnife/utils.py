@@ -1249,27 +1249,37 @@ def load_config(path):
                 elif value == "None":
                     params[key] = None
                 else:
-                    # Try to parse as int
-                    try:
-                        params[key] = int(value)
-                    except ValueError:
-                        # Try to parse as float
+                    # Check for split configuration FIRST (before number parsing)
+                    if key in ['train_splits', 'val_splits', 'test_splits']:
+                        # Parse as list of strings
+                        splits = [s.strip() for s in value.split(',') if s.strip()]
+                        params[key] = splits if splits else []
+                    else:
+                        # Try to parse as int
                         try:
-                            params[key] = float(value)
+                            params[key] = int(value)
                         except ValueError:
-                            # Check for lists
-                            if "," in value:
-                                if "." in value:
-                                    # Float list
-                                    entries = [float(el) for el in value.split(",")]
-                                    params[key] = entries
+                            # Try to parse as float
+                            try:
+                                params[key] = float(value)
+                            except ValueError:
+                                # Check for lists
+                                if "," in value:
+                                    if "." in value:
+                                        # Float list
+                                        entries = [float(el) for el in value.split(",")]
+                                        params[key] = entries
+                                    else:
+                                        # Int list
+                                        try:
+                                            entries = [int(el) for el in value.split(",")]
+                                            params[key] = entries
+                                        except ValueError:
+                                            # Not a number list, treat as string
+                                            params[key] = value
                                 else:
-                                    # Int list
-                                    entries = [int(el) for el in value.split(",")]
-                                    params[key] = entries
-                            else:
-                                # String
-                                params[key] = value
+                                    # String
+                                    params[key] = value
             except Exception as e:
                 print(f"Warning: Could not parse line: '{line}' - {e}")
                 continue
