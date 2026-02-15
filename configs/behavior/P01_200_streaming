@@ -1,16 +1,16 @@
 # ============================================================
-# CURE_75_streaming - Pig Behavior Training Configuration
+# CURE_200_streaming - Pig Behavior Training Configuration
 # Based on train_pig_behavior.py (working script)
-# Dataset: CURE 3-class with 75x75 images, streaming mode
+# Dataset: CURE 3-class with 200x200 images, streaming mode
 # ============================================================
 
 # ===================== RANDOM SEED ==========================
 # None for random seed (as in original script)
-# seed = None
+# seed = 207839
 seed = 931165
 
 # ==================== DATA PATHS ============================
-clips_output_dir = /home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-26-25_80_3classp01_all_pt2/
+clips_output_dir = /home/tbiinterns/Desktop/semiology_ml/training_data/combined_data_01-26-25_80_3classp01_all_topview/
 framerate = 1
 greyscale = False
 
@@ -20,36 +20,40 @@ use_streaming = True
 use_generator = True
 
 # ============ DATA COMBINATION OPTIONS ======================
-train_splits = train
-val_splits = test,val
+train_splits = train,val
+val_splits = test
 test_splits = None
 
 # ================ DATA PREPROCESSING ========================
-# Original script: IMG_DIM = 75
-image_x = 75
-image_y = 75
+image_x = 200
+image_y = 200
 normalize_data = True
 encode_labels = True
 do_flow = False
-undersample_data = False
+undersample_data = True
 use_class_weights = True
 recognition_model_augmentation = 3
 
 # =============== LABEL MERGING ==============================
+# Original script merges lying labels into single class
 merge_lying_labels = True
 
 # =============== MODEL ARCHITECTURE =========================
-# 3 classes after merging lying
+# Original script: 3 classes after merging lying
 num_classes = 3
+# Original script: backbone = 'mobilenet'
 backbone = mobilenet
 
-pretrained_weights_path = ../simclr/training/simclr_checkpoints_minimal_aug/encoder_epoch_90.h5
-freeze_pretrained = True
+# Original script pretrained weights path
+pretrained_weights_path = ../simclr/training/simclr_checkpoints_minimal_aug_200/encoder_epoch_100.h5
+freeze_pretrained = False
 
 # ============ RECOGNITION MODEL TRAINING ====================
+# Original script settings
 train_recognition_model = True
 recognition_model_epochs = 20
 recognition_model_batch_size = 64
+# Original script: recognition_model_lr = 3e-5
 recognition_model_lr = 0.00003
 recognition_model_optimizer = adam
 recognition_model_loss = focal_loss
@@ -57,12 +61,14 @@ recognition_model_loss = focal_loss
 # ++++++++++++++++++++++++++++++++++ UNUSED +++++++++++++++++++++++++++++
 
 # ========== RECOGNITION MODEL SCHEDULER =====================
+# Original script: recognition_model_use_scheduler = False
 recognition_model_use_scheduler = False
 recognition_model_scheduler_lr = 0.00003
 recognition_model_scheduler_factor = 1
 recognition_model_scheduler_lower_lr = 0.0000001
 
 # ============ SEQUENTIAL MODEL TRAINING =====================
+# Original script: train_sequential_model = False
 train_sequential_model = False
 recognition_model_fix = True
 recognition_model_remove_classification = True
@@ -79,6 +85,7 @@ sequential_model_use_scheduler = False
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 # =================== GPU SETTINGS ===========================
+# Original script settings
 gpu_allow_growth = True
 gpu_memory_limit_mb = 20480
 gpu_deterministic_ops = True
@@ -89,13 +96,14 @@ save_model = True
 save_history = True
 save_to_wandb = True
 checkpoint_dir = ./checkpoints
-model_name_prefix = p01_pig_behavior_model
+model_name_prefix = pig_behavior_model
 
 # =================== WANDB SETTINGS =========================
+# Original script: project="SIPIG-initial"
 wandb_enabled = True
 wandb_project = SIPIG-P01
-experiment_name = P01_75_streaming
-experiment_description = P01 3-class pig behavior lying merged 75x75 mobilenet streaming
+experiment_name = P01_200_streaming
+experiment_description = P01 3-class pig behavior with lying merged using 200x200 mobilenet streaming
 
 log_distributions = True
 log_confusion_matrix = True
