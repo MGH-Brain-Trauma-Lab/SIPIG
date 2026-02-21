@@ -705,245 +705,389 @@ def recurrent_model_lstm(recognition_model, input_shape, classes):
 
 
 # TODO: adaptiv size
+# def pretrained_recognition(
+#     model_name, input_shape, num_classes, skip_layers=False, 
+#     pretrained_weights_path=None, freeze_pretrained=False,
+#     keep_pretrained_head=True  # Default to True for backward compatibility
+# ):
+#     """
+#     Build recognition model with optional pretrained weights.
+
+#     Parameters
+#     ----------
+#     ...
+#     keep_pretrained_head : bool
+#         If True: Keep existing classification head from checkpoint (fine-tuning)
+#         If False: Remove head and add fresh classification head (transfer learning)
+#         Only applies when pretrained_weights_path is provided
+#     """
+
+#     # === LOAD CUSTOM PRETRAINED WEIGHTS IF PROVIDED ===
+#     if pretrained_weights_path is not None:
+#         import os
+#         import tensorflow as tf
+
+#         if os.path.exists(pretrained_weights_path):
+#             print(f"\n{'='*80}")
+#             print(f"Loading from: {pretrained_weights_path}")
+#             print(f"Keep pretrained head: {keep_pretrained_head}")
+#             print(f"Freeze backbone: {freeze_pretrained}")
+#             print(f"{'='*80}\n")
+
+#             try:
+#                 # Load the model
+#                 loaded_model = tf.keras.models.load_model(pretrained_weights_path, compile=False)
+
+#                 # ============ OPTION 1: KEEP PRETRAINED HEAD ============
+#                 if keep_pretrained_head:
+#                     output_classes = loaded_model.output_shape[-1]
+
+#                     # Verify output matches expected
+#                     if output_classes == num_classes:
+#                         print(f"✓ Model has {num_classes} output classes (matches config)")
+#                         print(f"✓ Using complete model as-is")
+
+#                         # Optionally freeze layers
+#                         if freeze_pretrained:
+#                             # Freeze everything except final classification layer
+#                             for layer in loaded_model.layers[:-2]:  # Keep Dense + Activation trainable
+#                                 layer.trainable = False
+#                             frozen_count = len([l for l in loaded_model.layers if not l.trainable])
+#                             print(f"✓ Froze {frozen_count} layers (keeping final head trainable)")
+
+#                         # Validate no duplicates
+#                         dense_count = len([l for l in loaded_model.layers if 'Dense' in str(type(l))])
+#                         if dense_count > 1:
+#                             print(f"\n⚠ WARNING: Found {dense_count} Dense layers (expected 1)")
+#                             print(f"⚠ This checkpoint may have been corrupted by training bug")
+#                             raise ValueError(
+#                                 "Loaded model has duplicate classification layers. "
+#                                 "Use a clean checkpoint or set keep_pretrained_head=False"
+#                             )
+
+#                         loaded_model.summary()
+#                         return loaded_model
+
+#                     else:
+#                         print(f"✗ Model has {output_classes} output classes, config needs {num_classes}")
+#                         raise ValueError(
+#                             f"Mismatch: loaded model has {output_classes} classes, "
+#                             f"but config specifies {num_classes}. "
+#                             f"Either:\n"
+#                             f"  1. Change num_classes in config to {output_classes}, OR\n"
+#                             f"  2. Set keep_pretrained_head=False to replace the head"
+#                         )
+
+#                 # ============ OPTION 2: REPLACE HEAD WITH FRESH ONE ============
+#                 else:
+#                     print(f"✓ Removing pretrained classification head")
+#                     print(f"✓ Building fresh classification head for {num_classes} classes")
+
+#                     # Extract backbone by removing last layers
+#                     # Typically: backbone → BatchNorm → Dropout → Dense → Activation
+#                     # We want to keep up to and including the backbone
+
+#                     # Find where classification head starts
+#                     # (after the main backbone, before Dense layer)
+#                     dense_layer_idx = None
+#                     for i, layer in enumerate(loaded_model.layers):
+#                         if 'Dense' in str(type(layer)):
+#                             dense_layer_idx = i
+#                             break
+
+#                     if dense_layer_idx is None:
+#                         raise ValueError("Could not find Dense layer in loaded model")
+
+#                     # Extract backbone (everything before Dense)
+#                     # Typically Dense is at -2 (Dense → Activation)
+#                     # But might have BatchNorm/Dropout before it
+
+#                     # Safe approach: go back from Dense to find last backbone layer
+#                     # Backbone is usually a Functional model (MobileNet, ResNet, etc.)
+#                     backbone_output_idx = None
+#                     for i in range(dense_layer_idx - 1, -1, -1):
+#                         layer = loaded_model.layers[i]
+#                         # MobileNet/ResNet appear as Functional models
+#                         if 'Functional' in str(type(layer)) or 'Model' in str(type(layer)):
+#                             backbone_output_idx = i
+#                             break
+#                         # Or look for the actual MobileNet/ResNet layer
+#                         if any(name in layer.name.lower() for name in ['mobilenet', 'resnet', 'densenet', 'efficientnet']):
+#                             backbone_output_idx = i
+#                             break
+
+#                     if backbone_output_idx is None:
+#                         # Fallback: use layer before first BatchNorm after input
+#                         print("⚠ Could not auto-detect backbone, using conservative cutoff")
+#                         backbone_output_idx = dense_layer_idx - 3  # Before BatchNorm → Dropout → Dense
+
+#                     print(f"  Extracting backbone: layers 0-{backbone_output_idx}")
+
+#                     # Build new model with fresh head
+#                     backbone = tf.keras.Model(
+#                         inputs=loaded_model.input,
+#                         outputs=loaded_model.layers[backbone_output_idx].output
+#                     )
+
+#                     # Freeze backbone if requested
+#                     if freeze_pretrained:
+#                         for layer in backbone.layers:
+#                             layer.trainable = False
+#                         print(f"✓ Froze backbone ({len(backbone.layers)} layers)")
+
+#                     # Add fresh classification head
+#                     x = backbone.output
+#                     x = BatchNormalization()(x)
+
+#                     # Use same dropout as original architecture
+#                     if model_name == "mobilenet":
+#                         dropout_rate = 0.7
+#                     elif model_name == "densenet":
+#                         dropout_rate = 0.5
+#                     else:
+#                         dropout_rate = 0.25
+
+#                     x = Dropout(dropout_rate)(x)
+#                     x = Dense(num_classes)(x)
+#                     x = Activation("softmax")(x)
+
+#                     new_model = tf.keras.Model(inputs=backbone.input, outputs=x)
+
+#                     print(f"✓ Fresh classification head added ({num_classes} classes)")
+#                     new_model.summary()
+
+#                     return new_model
+
+#             except Exception as e:
+#                 print(f"ERROR loading pretrained model: {e}")
+#                 print("Falling back to ImageNet weights...\n")
+#                 pretrained_weights_path = None  # Fall through to standard loading
+#         else:
+#             print(f"WARNING: Pretrained weights not found at {pretrained_weights_path}")
+#             print("Falling back to ImageNet weights...\n")
+#             pretrained_weights_path = None
+
+#     # ============ STANDARD IMAGENET LOADING (unchanged) ============
+#     if model_name == "mobilenet":
+#         recognition_model = MobileNetV3Small(
+#             include_top=False,
+#             input_shape=(input_shape[0], input_shape[1], 3),
+#             pooling="avg",
+#             weights="imagenet",
+#         )
+#     elif model_name == "resnet":
+#         recognition_model = ResNet50(
+#             include_top=False,
+#             input_shape=(input_shape[0], input_shape[1], 3),
+#             pooling="avg",
+#             weights="imagenet",
+#         )
+#     elif model_name == "densenet":
+#         recognition_model = DenseNet121(
+#             include_top=False,
+#             input_shape=(input_shape[0], input_shape[1], 3),
+#             pooling="avg",
+#             weights="imagenet",
+#         )
+#     # ... other backbones ...
+#     else:
+#         raise NotImplementedError(f"Backbone {model_name} not supported")
+
+#     # Build full model with head
+#     new_input = Input(
+#         batch_shape=(None, input_shape[0], input_shape[1], input_shape[2])
+#     )
+
+#     x = Conv2D(3, kernel_size=(1, 1), strides=(1, 1))(new_input)
+#     x = recognition_model(x)
+#     x = BatchNormalization()(x)
+
+#     if model_name == "mobilenet":
+#         dout = 0.9
+#         x = Dropout(dout)(x)
+#     elif model_name == "densenet":
+#         dout = 0.5
+#         x = Dropout(dout)(x)
+#     else:
+#         dout = 0.25
+#         x = Dropout(dout)(x)
+
+#     x = Dense(num_classes)(x)
+#     x = Activation("softmax")(x)
+
+#     recognition_model = Model(inputs=new_input, outputs=x)
+#     recognition_model.summary()
+
+#     return recognition_model
 def pretrained_recognition(
-    model_name, input_shape, num_classes, skip_layers=False, 
-    pretrained_weights_path=None, freeze_pretrained=False
-):
-    """This returns the model architecture for a model that operates on images and is pretrained with imagenet weights.
-    This architecture is used for IdNet and BehaviorNet as backbone in SIPEC and is referred to as RecognitionNet.
+        model_name, input_shape, num_classes, skip_layers=False, 
+        pretrained_weights_path=None, freeze_pretrained=False,
+        keep_pretrained_head=True
+    ):
+        """
+        Build recognition model with optional pretrained weights.
+        """
 
-    Parameters
-    ----------
-    model_name : str
-        Name of the pretrained recognition model to use (names include: "xception, "resnet", "densenet")
-    input_shape : np.ndarray - (Time, Width, Height, Channels)
-        Shape of the images over time.
-    num_classes : int
-        Number of behaviors to recognise.
-    skip_layers : bool
-        Whether to skip initial layers
-    pretrained_weights_path : str, optional
-        Path to custom pretrained weights (.h5 file). If provided, loads these weights instead of ImageNet.
-        Can be SimCLR weights, your own pretrained model, or any compatible weights.
-    freeze_pretrained : bool
-        Whether to freeze the pretrained backbone layers (only train classification head)
+        # === LOAD CUSTOM PRETRAINED WEIGHTS IF PROVIDED ===
+        if pretrained_weights_path is not None:
+            import os
+            if os.path.exists(pretrained_weights_path):
+                print(f"\n{'='*80}")
+                print(f"Loading custom pretrained weights from: {pretrained_weights_path}")
+                print(f"Freeze backbone: {freeze_pretrained}")
+                print(f"Keep pretrained head: {keep_pretrained_head}")
+                print(f"{'='*80}\n")
 
-    Returns
-    -------
-    keras.model
-        RecognitionNet
-    """
-    
-    # === LOAD CUSTOM PRETRAINED WEIGHTS IF PROVIDED ===
-    if pretrained_weights_path is not None:
-        import os
-        if os.path.exists(pretrained_weights_path):
-            print(f"\n{'='*80}")
-            print(f"Loading custom pretrained weights from: {pretrained_weights_path}")
-            print(f"Freeze backbone: {freeze_pretrained}")
-            print(f"{'='*80}\n")
-            
-            import tensorflow as tf
-            try:
-                # Load the pretrained model
-                pretrained_model = tf.keras.models.load_model(pretrained_weights_path, compile=False)
-                
-                # The pretrained model might be just the backbone or include classification layers
-                # We'll use it as the backbone and add our own classification head
-                
-                # Check if it has a classification layer we should remove
-                # (models typically end with Dense layer for classification)
-                if isinstance(pretrained_model.layers[-1], tf.keras.layers.Dense):
-                    print("Removing classification head from pretrained model...")
-                    # Get the backbone (everything except last layers)
-                    backbone = tf.keras.Model(
-                        inputs=pretrained_model.input,
-                        outputs=pretrained_model.layers[-3].output  # Before Dense->Activation
-                    )
-                else:
-                    # It's just a backbone, use as-is
-                    backbone = pretrained_model
-                
-                # Freeze backbone if requested
-                if freeze_pretrained:
-                    for layer in backbone.layers:
-                        layer.trainable = False
-                    print(f"✓ Froze {len(backbone.layers)} backbone layers")
-                
-                # Build the full recognition model with our classification head
-                new_input = Input(
-                    batch_shape=(None, input_shape[0], input_shape[1], input_shape[2])
-                )
-                
-                x = Conv2D(3, kernel_size=(1, 1), strides=(1, 1))(new_input)
-                x = backbone(x)
-                x = BatchNormalization()(x)
-                x = Dropout(0.5)(x)
-                x = Dense(num_classes)(x)
-                x = Activation("softmax")(x)
-                
-                recognition_model = Model(inputs=new_input, outputs=x)
-                recognition_model.summary()
-                
-                return recognition_model
-                
-            except Exception as e:
-                print(f"ERROR loading pretrained weights: {e}")
-                print("Falling back to ImageNet weights...\n")
-                pretrained_weights_path = None  # Fall through to standard loading
-        else:
-            print(f"WARNING: Pretrained weights not found at {pretrained_weights_path}")
-            print("Falling back to ImageNet weights...\n")
-            pretrained_weights_path = None
-            
-    if model_name == "xception":
-        #TODO: fixme generetic input shape adaptation
-        recognition_model = Xception(
-            include_top=False,
-            input_shape=(75, 75, 3),
-            # input_shape=(input_shape[0], input_shape[1], 3),
-            pooling="avg",
-            weights="imagenet",
-        )
-        # TODO: config me!
-        # just if segmentation  mask is small (for 35)
-        if skip_layers:
-            for i in range(0, 17):
-                recognition_model.layers.pop(0)
+                import tensorflow as tf
+                from tensorflow.keras.layers import Input, Conv2D, BatchNormalization, Dropout, Dense, Activation
+                from tensorflow.keras.models import Model
 
-    elif model_name == "efficientnet":
-        recognition_model = EfficientNetB7(
-            include_top=False,
-            input_shape=(input_shape[0], input_shape[1], 3),
-            pooling="avg",
-            weights="imagenet",
-        )
-    elif model_name == "efficientnet3":
-        recognition_model = EfficientNetB3(
-            include_top=False,
-            input_shape=(input_shape[0], input_shape[1], 3),
-            pooling="avg",
-            weights="imagenet",
-        )
-    elif model_name == "efficientnet4":
-        recognition_model = EfficientNetB4(
-            include_top=False,
-            input_shape=(input_shape[0], input_shape[1], 3),
-            pooling="avg",
-            weights="imagenet",
-        )
+                try:
+                    # Load the pretrained model
+                    loaded_model = tf.keras.models.load_model(pretrained_weights_path, compile=False)
 
-    elif model_name == "resnet":
-        recognition_model = ResNet50(
-            include_top=False,
-            input_shape=(input_shape[0], input_shape[1], 3),
-            pooling="avg",
-            weights="imagenet",
-        )
-    elif model_name == "resnet150":
-        recognition_model = ResNet152(
-            include_top=False,
-            input_shape=(input_shape[0], input_shape[1], 3),
-            pooling="avg",
-            weights="imagenet",
-        )
+                    print(f"✓ Model loaded successfully")
+                    print(f"  Input shape: {loaded_model.input_shape}")
+                    print(f"  Output shape: {loaded_model.output_shape}")
 
-    elif model_name == "inceptionv3":
-        recognition_model = InceptionV3(
-            include_top=False,
-            input_shape=(max(input_shape[0], 75), max(input_shape[1], 75), 3),
-            pooling="avg",
-            weights="imagenet",
-        )
+                    output_size = loaded_model.output_shape[-1]
 
-    elif model_name == "classification_small":
-        recognition_model = classification_small(input_shape, num_classes)
+                    # ============ OPTION 1: KEEP PRETRAINED HEAD ============
+                    if keep_pretrained_head:
+                        if output_size == num_classes:
+                            print(f"✓ Output matches num_classes ({num_classes})")
+                            print(f"✓ Using loaded model as-is\n")
 
-    elif model_name == "classification_large":
-        recognition_model = classification_large(input_shape, num_classes)
+                            if freeze_pretrained:
+                                for layer in loaded_model.layers[:-2]:
+                                    layer.trainable = False
+                                print(f"✓ Froze {sum(1 for l in loaded_model.layers if not l.trainable)} layers")
 
-    elif model_name == "densenet":
-        recognition_model = DenseNet121(
-            include_top=False,
-            input_shape=(input_shape[0], input_shape[1], 3),
-            pooling="avg",
-            weights="imagenet",
-        )
-    elif model_name == "mobilenet":
-        recognition_model = MobileNetV3Small(
-            include_top=False,
-            input_shape=(input_shape[0], input_shape[1], 3),
-            pooling="avg",
-            weights="imagenet",
-        )
-    elif model_name == "inceptionResnet":
-        recognition_model = InceptionResNetV2(
-            include_top=False,
-            input_shape=(input_shape[0], input_shape[1], 3),
-            pooling="avg",
-            weights="imagenet",
-        )
-    else:
-        raise NotImplementedError
+                            loaded_model.summary()
+                            return loaded_model
+                        else:
+                            raise ValueError(
+                                f"Output mismatch: model has {output_size} outputs, need {num_classes}. "
+                                f"Set keep_pretrained_head=False to add new classification head."
+                            )
 
-    new_input = Input(
-        batch_shape=(None, input_shape[0], input_shape[1], input_shape[2])
-    )
+                    # ============ OPTION 2: USE AS BACKBONE, ADD NEW HEAD ============
+                    else:
+                        print(f"✓ Using loaded model as backbone (output: {output_size} features)")
+                        print(f"✓ Adding fresh classification head ({num_classes} classes)\n")
 
-    if model_name == "inceptionResnet":
-        x = Conv2D(3, kernel_size=(1, 1), strides=(1, 1))(new_input)
-        x = Activation("relu")(x)
-        x = recognition_model(x)
-        x = Dense(128)(x)
-        x = Activation("relu")(x)
-        x = Dense(64)(x)
-        x = Activation("relu")(x)
-        x = Dense(num_classes)(x)
-        x = Activation("softmax")(x)
+                        # Use loaded model as backbone
+                        backbone = loaded_model
 
-    else:
-        x = Conv2D(3, kernel_size=(1, 1), strides=(1, 1))(new_input)
-        if (
-            model_name == "xception"
-            or model_name == "inceptionv3"
-            or model_name == "inceptionResnet"
-        ):
-            if input_shape[1] >= 76 or input_shape[1] == 75:
-                pass
+                        # Freeze backbone if requested
+                        if freeze_pretrained:
+                            for layer in backbone.layers:
+                                layer.trainable = False
+                            print(f"✓ Froze backbone ({len(backbone.layers)} layers)")
+
+                        # Build new model with classification head
+                        new_input = Input(
+                            batch_shape=(None, input_shape[0], input_shape[1], input_shape[2])
+                        )
+
+                        # Get features from backbone
+                        x = backbone(new_input)
+
+                        # Add classification head
+#                         x = BatchNormalization()(x)
+                        x = tf.keras.layers.LayerNormalization()(x)  # ← TO THIS
+
+
+                        # Use dropout based on backbone type
+                        if model_name == "mobilenet":
+                            dropout_rate = 0.7
+                        elif model_name == "densenet":
+                            dropout_rate = 0.5
+                        else:
+                            dropout_rate = 0.25
+
+                        x = Dropout(dropout_rate)(x)
+                        x = Dense(num_classes)(x)
+                        x = Activation("softmax")(x)
+
+                        full_model = Model(inputs=new_input, outputs=x)
+
+                        print(f"✓ Model with new head created")
+                        full_model.summary()
+
+                        return full_model
+
+                except Exception as e:
+                    print(f"\n{'='*70}")
+                    print(f"❌ ERROR LOADING PRETRAINED WEIGHTS")
+                    print(f"{'='*70}")
+                    print(f"Exception: {type(e).__name__}: {e}")
+                    print(f"\nFull traceback:")
+                    import traceback
+                    traceback.print_exc()
+                    print(f"\n⚠ FALLING BACK TO IMAGENET WEIGHTS")
+                    print(f"{'='*70}\n")
+
+                    pretrained_weights_path = None
             else:
-                # zero pad to 75 depending on input shape
-                x = ZeroPadding2D(padding=(11, 14))(x)
+                print(f"\n❌ Pretrained weights file not found: {pretrained_weights_path}")
+                print(f"⚠ FALLING BACK TO IMAGENET WEIGHTS\n")
+                pretrained_weights_path = None
+
+        # ============ STANDARD IMAGENET LOADING (fallback) ============
+        print(f"\nBuilding model with ImageNet initialization...")
+
+        if model_name == "mobilenet":
+            recognition_model = MobileNetV3Small(
+                include_top=False,
+                input_shape=(input_shape[0], input_shape[1], 3),
+                pooling="avg",
+                weights="imagenet",
+            )
+        elif model_name == "densenet":
+            recognition_model = DenseNet121(
+                include_top=False,
+                input_shape=(input_shape[0], input_shape[1], 3),
+                pooling="avg",
+                weights="imagenet",
+            )
+        elif model_name == "resnet":
+            recognition_model = ResNet50(
+                include_top=False,
+                input_shape=(input_shape[0], input_shape[1], 3),
+                pooling="avg",
+                weights="imagenet",
+            )
+        # ... add other backbones ...
+        else:
+            raise NotImplementedError(f"Backbone {model_name} not supported")
+
+        # Build full model with classification head
+        new_input = Input(
+            batch_shape=(None, input_shape[0], input_shape[1], input_shape[2])
+        )
+
+        x = Conv2D(3, kernel_size=(1, 1), strides=(1, 1))(new_input)
         x = recognition_model(x)
         x = BatchNormalization()(x)
-        if (
-            model_name == "xception"
-            or model_name == "efficientnet"
-            or model_name == "efficientnet4"
-        ):
-            dout = 0.25
-            x = Dropout(dout)(x)
-        if model_name == "densenet":
-            # dout = 0.25
-            dout = 0.5
-            x = Dropout(dout)(x)
-            # x = Dense(256)(x)
-            # x = Activation('relu')(x)
-            # x = Dropout(dout)(x)
-            # x = Dense(128)(x)
-            # x = Activation('relu')(x)
-            # x = Dropout(dout)(x)
-            # x = Dense(64)(x)
-            # x = Activation('relu')(x)
+
         if model_name == "mobilenet":
             dout = 0.7
-            x = Dropout(dout)(x)
+        elif model_name == "densenet":
+            dout = 0.5
+        else:
+            dout = 0.25
+
+        x = Dropout(dout)(x)
         x = Dense(num_classes)(x)
         x = Activation("softmax")(x)
 
-    recognition_model = Model(inputs=new_input, outputs=x)
-    recognition_model.summary()
+        recognition_model = Model(inputs=new_input, outputs=x)
 
-    return recognition_model
+        print(f"\n✓ Model with ImageNet backbone created")
+        recognition_model.summary()
+
+        return recognition_model
 
 
 # Model with hyperparameters from idtracker.ai

@@ -1,6 +1,7 @@
 # SIPEC
 # MARKUS MARKS
 # Dataloader
+# UPDATED WITH CLASS-BALANCED STREAMING
 import multiprocessing
 import pickle
 
@@ -655,6 +656,7 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
     Generator that loads clips from disk on-demand.
     Memory efficient - only loads one batch at a time.
     Supports both single-frame (recognition) and sequential (LSTM) modes.
+    Supports class-balanced sampling for handling imbalanced datasets.
     """
     
     def __init__(
@@ -668,10 +670,12 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
         shuffle=True,
         augmentation=None,
         normalize=True,
-        mode='recognition',  # NEW: 'recognition' or 'sequential'
-        look_back=5,  # NEW: for sequential mode
-        temporal_causal=False,  # NEW: for sequential mode
+        mode='recognition',
+        look_back=5,
+        temporal_causal=False,
         frames_per_video=1,
+        balanced_sampling=False,  # NEW: Enable class-balanced batch sampling
+        sampling_strategy='stratified',  # NEW: 'stratified' or 'weighted'
     ):
         """
         Args:
@@ -688,11 +692,9 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
             look_back: Number of frames before/after center frame for sequential mode
             temporal_causal: If True, only use past frames in sequential mode
             frames_per_video: Number of frames to sample from each video when streaming
+            balanced_sampling: If True, ensure balanced class representation in batches
+            sampling_strategy: 'stratified' (exact balance per batch) or 'weighted' (probabilistic balance)
         """
-        self.clip_paths = np.array(clip_paths)
-        self.labels = labels
-        self.label_encoder = label_encoder
-        self.num_classes = num_classes
         self.batch_size = batch_size
         self.target_size = target_size
         self.shuffle = shuffle
@@ -702,7 +704,12 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
         self.look_back = look_back
         self.temporal_causal = temporal_causal
         self.frames_per_video = frames_per_video
+        self.balanced_sampling = balanced_sampling
+        self.sampling_strategy = sampling_strategy
+        self.label_encoder = label_encoder
+        self.num_classes = num_classes
         
+        # Expand dataset if frames_per_video > 1
         if frames_per_video > 1 and mode == 'recognition':
             print(f"Expanding dataset: {frames_per_video} frames per video")
             expanded_paths = []
@@ -714,7 +721,6 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
 
             self.clip_paths = np.array(expanded_paths)
             self.labels = expanded_labels
-            self.label_encoder = label_encoder
             self.encoded_labels = label_encoder.transform(expanded_labels)
 
             print(f"Dataset expanded: {len(clip_paths)} videos → {len(self.clip_paths)} samples")
@@ -722,17 +728,130 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
             # Original behavior for sequential mode or frames_per_video=1
             self.clip_paths = np.array(clip_paths)
             self.labels = labels
-            self.label_encoder = label_encoder
             self.encoded_labels = label_encoder.transform(labels)
-
-        # Create indices for shuffling
-        self.indices = np.arange(len(self.clip_paths))
-        if self.shuffle:
-            np.random.shuffle(self.indices)
+        
+        # ============ CLASS-BALANCED SAMPLING SETUP ============
+        if self.balanced_sampling:
+            print(f"\n{'='*70}")
+            print(f"SETTING UP CLASS-BALANCED SAMPLING ({self.sampling_strategy})")
+            print(f"{'='*70}")
+            
+            # Build class-to-indices mapping
+            self.class_indices = {}
+            for class_id in range(self.num_classes):
+                class_mask = self.encoded_labels == class_id
+                self.class_indices[class_id] = np.where(class_mask)[0]
+                class_name = self.label_encoder.inverse_transform([class_id])[0]
+                print(f"  Class {class_id} ({class_name}): {len(self.class_indices[class_id])} samples")
+            
+            if self.sampling_strategy == 'stratified':
+                # Stratified: ensure exact balance in each batch
+                self.samples_per_class = self.batch_size // self.num_classes
+                self.remainder = self.batch_size % self.num_classes
+                
+                print(f"\nStratified sampling:")
+                print(f"  Samples per class per batch: {self.samples_per_class}")
+                if self.remainder > 0:
+                    print(f"  Extra samples (distributed): {self.remainder}")
+                print(f"  Total batch size: {self.batch_size}")
+                
+                # Create shuffled indices for each class
+                self.class_shuffled_indices = {}
+                for class_id in range(self.num_classes):
+                    self.class_shuffled_indices[class_id] = self.class_indices[class_id].copy()
+                    if self.shuffle:
+                        np.random.shuffle(self.class_shuffled_indices[class_id])
+                
+                # Track position in each class's shuffled list
+                self.class_positions = {class_id: 0 for class_id in range(self.num_classes)}
+                
+            elif self.sampling_strategy == 'weighted':
+                # Weighted: sample with inverse frequency
+                class_counts = np.array([len(self.class_indices[i]) for i in range(self.num_classes)])
+                # Inverse frequency weights
+                self.class_weights = 1.0 / class_counts
+                self.class_weights /= self.class_weights.sum()  # Normalize to probabilities
+                
+                print(f"\nWeighted sampling probabilities:")
+                for class_id in range(self.num_classes):
+                    class_name = self.label_encoder.inverse_transform([class_id])[0]
+                    print(f"  Class {class_id} ({class_name}): {self.class_weights[class_id]:.4f}")
+            
+            print(f"{'='*70}\n")
+            
+            # For balanced sampling, we don't use a simple indices array
+            self.indices = None
+        else:
+            # Standard random sampling
+            self.indices = np.arange(len(self.clip_paths))
+            if self.shuffle:
+                np.random.shuffle(self.indices)
     
     def __len__(self):
         """Number of batches per epoch"""
-        return int(np.ceil(len(self.clip_paths) / self.batch_size))
+        if self.balanced_sampling and self.sampling_strategy == 'stratified':
+            # In stratified mode, epoch length is determined by smallest class
+            min_class_size = min(len(self.class_indices[i]) for i in range(self.num_classes))
+            # Number of times we can sample from smallest class
+            batches_per_class = min_class_size // self.samples_per_class
+            return batches_per_class
+        else:
+            # Standard mode
+            return int(np.ceil(len(self.clip_paths) / self.batch_size))
+    
+    def _get_stratified_batch_indices(self):
+        """
+        Get batch indices ensuring balanced class representation.
+        Each batch has exactly (or nearly exactly) the same number of samples per class.
+        """
+        batch_indices = []
+        
+        # Sample from each class
+        for class_id in range(self.num_classes):
+            # Get current position in this class's shuffled list
+            pos = self.class_positions[class_id]
+            class_idx_list = self.class_shuffled_indices[class_id]
+            
+            # Determine how many samples to take from this class
+            if class_id < self.remainder:
+                n_samples = self.samples_per_class + 1
+            else:
+                n_samples = self.samples_per_class
+            
+            # Extract indices with wraparound
+            for _ in range(n_samples):
+                batch_indices.append(class_idx_list[pos % len(class_idx_list)])
+                pos += 1
+            
+            # Update position
+            self.class_positions[class_id] = pos
+        
+        # Shuffle batch indices so classes are mixed
+        if self.shuffle:
+            np.random.shuffle(batch_indices)
+        
+        return np.array(batch_indices)
+    
+    def _get_weighted_batch_indices(self):
+        """
+        Get batch indices using weighted random sampling.
+        Classes are sampled with probability inversely proportional to their frequency.
+        """
+        # Sample classes according to weights
+        sampled_classes = np.random.choice(
+            self.num_classes,
+            size=self.batch_size,
+            p=self.class_weights,
+            replace=True
+        )
+        
+        # Sample one random index from each sampled class
+        batch_indices = []
+        for class_id in sampled_classes:
+            idx = np.random.choice(self.class_indices[class_id])
+            batch_indices.append(idx)
+        
+        return np.array(batch_indices)
     
     def _load_frame_from_path(self, path, frame_idx=None):
         """
@@ -877,8 +996,17 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
         Generate one batch of data.
         Loads frames from video files on-demand.
         """
-        # Get batch indices
-        batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
+        # Get batch indices based on sampling strategy
+        if self.balanced_sampling:
+            if self.sampling_strategy == 'stratified':
+                batch_indices = self._get_stratified_batch_indices()
+            elif self.sampling_strategy == 'weighted':
+                batch_indices = self._get_weighted_batch_indices()
+            else:
+                raise ValueError(f"Unknown sampling strategy: {self.sampling_strategy}")
+        else:
+            # Standard sequential sampling
+            batch_indices = self.indices[idx * self.batch_size:(idx + 1) * self.batch_size]
         
         # Get paths and labels for this batch
         batch_paths = self.clip_paths[batch_indices]
@@ -942,7 +1070,17 @@ class StreamingDataGenerator(tf.keras.utils.Sequence):
         return X, y
     
     def on_epoch_end(self):
-        """Shuffle indices at end of each epoch"""
-        if self.shuffle:
-            np.random.shuffle(self.indices)
-            
+        """
+        Shuffle/reset at end of each epoch.
+        """
+        if self.balanced_sampling and self.sampling_strategy == 'stratified':
+            # Reshuffle each class's indices
+            for class_id in range(self.num_classes):
+                if self.shuffle:
+                    np.random.shuffle(self.class_shuffled_indices[class_id])
+                # Reset position
+                self.class_positions[class_id] = 0
+        elif not self.balanced_sampling:
+            # Standard shuffling
+            if self.shuffle:
+                np.random.shuffle(self.indices)

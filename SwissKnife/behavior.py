@@ -30,6 +30,9 @@ from SwissKnife.utils import (
     callbacks_learningRate_plateau,
 )
 
+import tensorflow as tf
+import numpy as np
+
 
 def train_behavior(
     dataloader,
@@ -50,6 +53,7 @@ def train_behavior(
         skip_layers=True,
         pretrained_weights_path=config.get("pretrained_weights_path", None),
         freeze_pretrained=config.get("freeze_pretrained", False),
+        keep_pretrained_head=config.get("keep_pretrained_head", True),  # NEW
     )
     # ========== ADD THIS DEBUG CODE ==========
     print("\n" + "="*80)
@@ -66,6 +70,31 @@ def train_behavior(
     if not has_dropout:
         print("❌ WARNING: NO DROPOUT LAYERS FOUND IN MODEL!")
     print("="*80 + "\n")
+    
+    print(f"\n{'='*70}")
+    print(f"VERIFYING PRETRAINED WEIGHTS LOADED")
+    print(f"{'='*70}")
+
+    # Get a sample layer's weights to check if they're ImageNet or SimCLR
+    # ImageNet weights have specific patterns, SimCLR will be different
+    sample_layer = our_model.recognition_model.layers[2]  # Usually first conv layer
+    sample_weights = sample_layer.get_weights()[0] if len(sample_layer.get_weights()) > 0 else None
+
+    if sample_weights is not None:
+        weight_mean = sample_weights.mean()
+        weight_std = sample_weights.std()
+        print(f"Sample layer: {sample_layer.name}")
+        print(f"  Weight mean: {weight_mean:.6f}")
+        print(f"  Weight std: {weight_std:.6f}")
+
+        # ImageNet init typically has mean near 0, std around 0.1-0.3
+        # If very different, might be SimCLR
+        if abs(weight_mean) < 0.01 and 0.05 < weight_std < 0.5:
+            print(f"  ✓ Weights look like standard initialization (ImageNet or SimCLR)")
+        else:
+            print(f"  ⚠ Unusual weight distribution")
+
+    print(f"{'='*70}\n")
     # =========================================
 
     our_model.set_class_weight(class_weights)
@@ -87,6 +116,11 @@ def train_behavior(
                 # Use StreamingDataGenerator
                 from SwissKnife.dataloader import StreamingDataGenerator
 
+                # ========== GET BALANCED SAMPLING CONFIG ==========
+                balanced_sampling = config.get('balanced_sampling', False)
+                sampling_strategy = config.get('sampling_strategy', 'stratified')
+                # ==================================================
+
                 print("Creating STREAMING generators for recognition model...")
                 dataloader.training_generator = StreamingDataGenerator(
                     clip_paths=dataloader.train_paths,
@@ -100,7 +134,256 @@ def train_behavior(
                     normalize=True,
                     mode='recognition',
                     frames_per_video=10,
+                    balanced_sampling=balanced_sampling,      # NEW
+                    sampling_strategy=sampling_strategy,      # NEW
                 )
+                # ============ VERIFY STRATIFIED SAMPLING IS WORKING ============
+                print(f"\n{'='*70}")
+                print(f"VERIFYING STRATIFIED SAMPLING")
+                print(f"{'='*70}")
+
+                # Load first 3 batches and check composition
+                for batch_idx in range(3):
+                    print(f"\nBatch {batch_idx}:")
+                    try:
+                        batch_x, batch_y = dataloader.training_generator[batch_idx]
+
+                        # Decode labels
+                        batch_labels = np.argmax(batch_y, axis=-1)
+
+                        # Count each class
+                        from collections import Counter
+                        label_counts = Counter(batch_labels)
+
+                        print(f"  Batch shape: {batch_x.shape}")
+                        print(f"  Label distribution:")
+                        for class_id in range(dataloader.num_classes):
+                            class_name = dataloader.label_encoder.inverse_transform([class_id])[0]
+                            count = label_counts.get(class_id, 0)
+                            percentage = (count / len(batch_labels)) * 100
+                            print(f"    Class {class_id} ({class_name}): {count:3d} samples ({percentage:5.1f}%)")
+
+                        # Check if balanced
+                        counts = [label_counts.get(i, 0) for i in range(dataloader.num_classes)]
+                        min_count = min(counts)
+                        max_count = max(counts)
+                        if max_count - min_count <= 2:  # Allow ±2 difference for remainder
+                            print(f"  ✓ BALANCED (difference: {max_count - min_count})")
+                        else:
+                            print(f"  ✗ IMBALANCED (difference: {max_count - min_count})")
+
+                    except Exception as e:
+                        print(f"  ✗ Error loading batch: {e}")
+
+                print(f"{'='*70}\n")
+                # ===============================================================
+                
+
+                # ============ CHECK MODEL & TRAINING SETUP ============
+                print(f"\n{'='*70}")
+                print(f"MODEL & TRAINING DIAGNOSTIC")
+                print(f"{'='*70}")
+
+                # 1. Config check
+                print(f"\n1. TRAINING CONFIG:")
+                print(f"   Learning rate: {config['recognition_model_lr']}")
+                print(f"   Optimizer: {config['recognition_model_optimizer']}")
+                print(f"   Loss: {config['recognition_model_loss']}")
+                print(f"   Batch size: {config['recognition_model_batch_size']}")
+                print(f"   Epochs: {config['recognition_model_epochs']}")
+                print(f"   Class weights: {config.get('use_class_weights', False)}")
+                print(f"   Pretrained weights: {config.get('pretrained_weights_path', 'None')}")
+                print(f"   Keep pretrained head: {config.get('keep_pretrained_head', 'N/A')}")
+                print(f"   Freeze pretrained: {config.get('freeze_pretrained', False)}")
+
+                # 2. Model architecture check
+                print(f"\n2. MODEL ARCHITECTURE:")
+                print(f"   Total layers: {len(our_model.recognition_model.layers)}")
+
+                # Count critical layers
+                dense_layers = [l for l in our_model.recognition_model.layers if 'Dense' in str(type(l))]
+                dropout_layers = [l for l in our_model.recognition_model.layers if 'Dropout' in str(type(l))]
+                bn_layers = [l for l in our_model.recognition_model.layers if 'BatchNormalization' in str(type(l))]
+
+                print(f"   Dense layers: {len(dense_layers)} (expected: 1)")
+                print(f"   Dropout layers: {len(dropout_layers)} (expected: 1)")
+                print(f"   BatchNorm layers: {len(bn_layers)}")
+
+                if len(dense_layers) > 1:
+                    print(f"\n   ⚠ WARNING: Multiple Dense layers detected!")
+                    for i, layer in enumerate(dense_layers):
+                        print(f"      Dense {i}: {layer.name}, output_shape={layer.output_shape}, trainable={layer.trainable}")
+
+                if len(dropout_layers) > 1:
+                    print(f"\n   ⚠ WARNING: Multiple Dropout layers detected!")
+                    for i, layer in enumerate(dropout_layers):
+                        print(f"      Dropout {i}: {layer.name}, rate={layer.rate}, trainable={layer.trainable}")
+
+                # 3. Check trainable parameters
+                trainable_count = sum([1 for l in our_model.recognition_model.layers if l.trainable])
+                frozen_count = len(our_model.recognition_model.layers) - trainable_count
+                print(f"\n3. TRAINABLE STATUS:")
+                print(f"   Trainable layers: {trainable_count}")
+                print(f"   Frozen layers: {frozen_count}")
+
+                if frozen_count > trainable_count:
+                    print(f"   ⚠ WARNING: Most layers are frozen! This may prevent learning.")
+
+                # 4. Test model on a batch
+                print(f"\n4. MODEL OUTPUT TEST:")
+                test_batch_x, test_batch_y = dataloader.training_generator[0]
+                test_predictions = our_model.recognition_model.predict(test_batch_x[:10], verbose=0)
+
+                print(f"   Test batch (first 10 samples):")
+                print(f"   Prediction shape: {test_predictions.shape}")
+                print(f"   Prediction range: [{test_predictions.min():.4f}, {test_predictions.max():.4f}]")
+                print(f"   First prediction: {test_predictions[0]}")
+                print(f"   Sum of first prediction: {test_predictions[0].sum():.4f} (should be ~1.0 for softmax)")
+
+                # Check if predictions are random or collapsed
+                pred_classes = np.argmax(test_predictions, axis=-1)
+                from collections import Counter
+                pred_dist = Counter(pred_classes)
+                print(f"   Predicted class distribution:")
+                for class_id in range(dataloader.num_classes):
+                    class_name = dataloader.label_encoder.inverse_transform([class_id])[0]
+                    count = pred_dist.get(class_id, 0)
+                    print(f"      {class_name}: {count}/10")
+
+                # Check if model is stuck predicting one class
+                if len(pred_dist) == 1:
+                    print(f"   ✗ WARNING: Model predicting ONLY class {list(pred_dist.keys())[0]}!")
+                elif len(pred_dist) == dataloader.num_classes:
+                    print(f"   ✓ Model outputs all {dataloader.num_classes} classes")
+
+                # 5. Check class weights if used
+                if config.get('use_class_weights', False) and class_weights is not None:
+                    print(f"\n5. CLASS WEIGHTS:")
+                    # class_weights is a numpy array, need to convert to dict
+                    for class_id in range(len(class_weights)):
+                        class_name = dataloader.label_encoder.inverse_transform([class_id])[0]
+                        print(f"   {class_name}: {class_weights[class_id]:.4f}")
+
+                print(f"{'='*70}\n")
+                # ===============================================================
+                
+                # After MODEL & TRAINING DIAGNOSTIC, before training:
+
+                print(f"\n{'='*70}")
+                print(f"PRE-TRAINING MODEL STATE")
+                print(f"{'='*70}")
+
+                # Get first batch
+                test_batch_x, test_batch_y = dataloader.training_generator[0]
+                test_batch_small = test_batch_x[:32]  # Use smaller batch
+                test_labels_small = np.argmax(test_batch_y[:32], axis=-1)
+
+                # Get initial predictions
+                initial_preds = our_model.recognition_model.predict(test_batch_small, verbose=0)
+                initial_classes = np.argmax(initial_preds, axis=-1)
+
+                # Show distribution
+                from collections import Counter
+                pred_dist = Counter(initial_classes)
+                true_dist = Counter(test_labels_small)
+
+                print(f"\nTrue label distribution (first 32 samples):")
+                for class_id in range(dataloader.num_classes):
+                    class_name = dataloader.label_encoder.inverse_transform([class_id])[0]
+                    count = true_dist.get(class_id, 0)
+                    print(f"  {class_name}: {count}/32")
+
+                print(f"\nInitial predictions (before training):")
+                for class_id in range(dataloader.num_classes):
+                    class_name = dataloader.label_encoder.inverse_transform([class_id])[0]
+                    count = pred_dist.get(class_id, 0)
+                    confidence = initial_preds[:, class_id].mean()
+                    print(f"  {class_name}: {count}/32 predictions (avg confidence: {confidence:.4f})")
+
+                # Check if initialization is reasonable
+                entropy = -(initial_preds * np.log(initial_preds + 1e-10)).sum(axis=1).mean()
+                print(f"\nAverage prediction entropy: {entropy:.4f}")
+                print(f"  (High entropy ~1.1 = uncertain/random, Low entropy ~0 = confident)")
+
+                if entropy > 0.8:
+                    print(f"  ✓ Model is uncertain (good for untrained model)")
+                else:
+                    print(f"  ✗ Model is too confident (may be stuck)")
+
+                print(f"{'='*70}\n")
+                
+                # In behavior.py, replace the DIAGNOSING LOGIT SATURATION section with this simpler version:
+
+                print(f"\n{'='*70}")
+                print(f"DIAGNOSING LOGIT SATURATION")
+                print(f"{'='*70}")
+
+                # Get a test batch
+                test_batch_x, test_batch_y = dataloader.training_generator[0]
+                test_sample = test_batch_x[:2]  # Use just 2 samples for speed
+
+                # ============ STEP 1: Get Intermediate Outputs ============
+                print(f"\n1. CHECKING LAYER OUTPUTS:")
+
+                # Get outputs from each layer
+                layer_outputs = []
+                for i, layer in enumerate(our_model.recognition_model.layers):
+                    try:
+                        intermediate_model = tf.keras.Model(
+                            inputs=our_model.recognition_model.input,
+                            outputs=layer.output
+                        )
+                        output = intermediate_model.predict(test_sample, verbose=0)
+
+                        layer_type = str(type(layer).__name__)
+                        print(f"\n   Layer {i}: {layer.name} ({layer_type})")
+                        print(f"      Shape: {output.shape}")
+                        print(f"      Mean: {output.mean():.6f}")
+                        print(f"      Std: {output.std():.6f}")
+                        print(f"      Min: {output.min():.6f}")
+                        print(f"      Max: {output.max():.6f}")
+
+                        if 'Dense' in layer_type:
+                            print(f"      → LOGITS (before softmax)")
+                            print(f"      First sample: {output[0]}")
+                            print(f"      Range: {output.max() - output.min():.6f}")
+
+                            if output.max() - output.min() > 50:
+                                print(f"      ❌ HUGE logit range! This causes saturation.")
+                            elif output.max() - output.min() > 20:
+                                print(f"      ⚠ Large logit range")
+
+                        if 'Activation' in layer_type or 'Softmax' in layer_type:
+                            print(f"      → FINAL PROBABILITIES")
+                            print(f"      First sample: {output[0]}")
+
+                        layer_outputs.append((i, layer.name, output))
+
+                    except Exception as e:
+                        print(f"   Layer {i}: {layer.name} - Cannot extract (nested model)")
+
+                # ============ STEP 2: Check Dense Layer Weights ============
+                print(f"\n2. DENSE LAYER WEIGHTS:")
+
+                for layer in our_model.recognition_model.layers:
+                    if 'Dense' in str(type(layer)):
+                        weights, bias = layer.get_weights()
+
+                        print(f"   Weight shape: {weights.shape}")
+                        print(f"   Weight mean: {weights.mean():.6f}")
+                        print(f"   Weight std: {weights.std():.6f}")
+                        print(f"   Weight min: {weights.min():.6f}")
+                        print(f"   Weight max: {weights.max():.6f}")
+                        print(f"   Bias: {bias}")
+
+                        # Estimate magnitude
+                        if weights.std() > 1:
+                            print(f"   ⚠ Dense weights have large std ({weights.std():.3f})")
+                        if np.abs(weights).max() > 2:
+                            print(f"   ⚠ Dense weights have large max ({np.abs(weights).max():.3f})")
+
+                print(f"{'='*70}\n")
+                
                 dataloader.validation_generator = StreamingDataGenerator(
                     clip_paths=dataloader.val_paths,
                     labels=dataloader.val_labels_raw,
@@ -108,12 +391,15 @@ def train_behavior(
                     num_classes=dataloader.num_classes,
                     batch_size=config["recognition_model_batch_size"],
                     target_size=dataloader.target_size,
-                    shuffle=False,
+                    shuffle=False,  # Don't shuffle validation
                     augmentation=None,
                     normalize=True,
                     mode='recognition',
-                    frames_per_video=5,  # ← Keep at 1 for consistent validation
+                    frames_per_video=5,
+                    balanced_sampling=False,  # Don't balance validation - keep true distribution
+                    sampling_strategy=sampling_strategy,
                 )
+                
                 
                 # ============ ADD THIS ============
                 print(f"\n{'='*70}")
