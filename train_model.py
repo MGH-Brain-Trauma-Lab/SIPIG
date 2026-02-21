@@ -3,8 +3,8 @@ Training script for pig behavior classification using extracted clips
 All hyperparameters loaded from SIPEC config files.
 
 Usage:
-    python train_pig_behavior.py --config configs/behavior/default
-    python train_pig_behavior.py --config configs/behavior/p01_side_75
+    python train_model.py --config configs/behavior/default
+    python train_model.py --config configs/behavior/p01_side_75
 """
 import os
 import sys
@@ -43,6 +43,10 @@ def setup_seed(seed=None):
     np.random.seed(seed)
     tf.random.set_seed(seed)
     
+    # For additional reproducibility with GPU operations
+    os.environ['TF_DETERMINISTIC_OPS'] = '1'
+    os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
+    
     return seed
 
 
@@ -52,7 +56,7 @@ def setup_gpu(config):
     if config.get('gpu_allow_growth', True):
         os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
     
-    # Deterministic operations
+    # Deterministic operations (already set in setup_seed, but ensure it's set)
     if config.get('gpu_deterministic_ops', True):
         os.environ['TF_DETERMINISTIC_OPS'] = '1'
         os.environ['TF_CUDNN_DETERMINISTIC'] = '1'
@@ -88,10 +92,19 @@ def load_data(config):
     clips_dir = config['clips_output_dir']
     framerate = config.get('framerate', 1)
     greyscale = config.get('greyscale', False)
+    train_splits = config.get('train_splits', None)
+    val_splits = config.get('val_splits', None)
+    test_splits = config.get('test_splits', None)
     
     if use_streaming:
         print("Loading clip metadata (streaming mode)...")
-        metadata = load_training_metadata(clips_dir, framerate=framerate)
+        metadata = load_training_metadata(
+            clips_dir, 
+            framerate=framerate,
+            train_splits=train_splits,
+            val_splits=val_splits,
+            test_splits=test_splits
+        )
         x_train, y_train = metadata['train']
         x_val, y_val = metadata['val']
         x_test, y_test = metadata['test']
@@ -102,7 +115,14 @@ def load_data(config):
         print(f"  Test: {len(x_test)} clips")
     else:
         print("Loading all clips into memory (traditional mode)...")
-        data = load_training_data(clips_dir, framerate=framerate, greyscale=greyscale)
+        data = load_training_data(
+            clips_dir, 
+            framerate=framerate, 
+            greyscale=greyscale,
+            train_splits=train_splits,
+            val_splits=val_splits,
+            test_splits=test_splits
+        )
         
         x_train, y_train = data['train']
         x_val, y_val = data['val']
@@ -122,7 +142,7 @@ def merge_lying_classes(y_train, y_val, y_test, config):
         print("\nMerging lying labels...")
         y_train = ['lying' if 'lying' in label else label for label in y_train]
         y_test = ['lying' if 'lying' in label else label for label in y_test]
-        if y_val is not None:
+        if y_val is not None and len(y_val) > 0:
             y_val = ['lying' if 'lying' in label else label for label in y_val]
     
     return y_train, y_val, y_test
@@ -131,7 +151,7 @@ def merge_lying_classes(y_train, y_val, y_test, config):
 def print_label_distributions(y_train, y_val, y_test):
     """Print label distribution statistics."""
     train_dist = Counter(y_train)
-    val_dist = Counter(y_val) if y_val is not None else {}
+    val_dist = Counter(y_val) if y_val is not None and len(y_val) > 0 else {}
     test_dist = Counter(y_test)
     
     print(f"\nLabel distributions:")
@@ -164,7 +184,7 @@ def calculate_class_weights(y_train, config):
     # Convert to dict for Keras
     class_weights_dict = {i: class_weights[i] for i in range(len(class_weights))}
     
-    return class_weights_dict
+    return class_weights_dict, label_encoder
 
 
 def initialize_wandb(config, seed, distributions, class_weights_dict=None):
@@ -236,8 +256,9 @@ def log_validation_results(config, model, dataloader, results, report, seed):
     use_streaming = config['use_streaming']
     
     if use_streaming:
+        # *** FIXED: Load FULL validation set, not just 10 batches ***
         print("Loading validation data for final evaluation...")
-        val_batches = min(10, len(dataloader.validation_generator))
+        val_batches = len(dataloader.validation_generator)  # Use ALL batches
         val_x, val_y = [], []
         for i in range(val_batches):
             batch_x, batch_y = dataloader.validation_generator[i]
@@ -323,31 +344,64 @@ def log_validation_results(config, model, dataloader, results, report, seed):
             plt.close(fig)
 
 
-def save_model(config, model, results, seed, epoch):
-    """Save model and artifacts."""
+class PerEpochCheckpoint(tf.keras.callbacks.Callback):
+    """
+    Saves model after each epoch with average precision in filename.
+    All checkpoints are saved in the checkpoint_dir.
+    """
+    def __init__(self, checkpoint_dir, class_names=None):
+        super().__init__()
+        self.checkpoint_dir = checkpoint_dir
+        self.class_names = class_names
+        
+    def on_epoch_end(self, epoch, logs=None):
+        logs = logs or {}
+        
+        # Get validation metrics
+        val_loss = logs.get('val_loss', 0.0)
+        val_acc = logs.get('val_categorical_accuracy', 0.0)
+        
+        # Try to get per-class precision from validation data
+        # This will be computed during the Metrics callback if available
+        avg_precision = logs.get('val_avg_precision', val_acc)  # Fallback to accuracy
+        
+        # Create filename with metrics
+        filename = f"epoch_{epoch+1:02d}_loss{val_loss:.4f}_acc{val_acc:.4f}_avgprec{avg_precision:.4f}.h5"
+        filepath = os.path.join(self.checkpoint_dir, filename)
+        
+        # Save the model
+        self.model.save(filepath)
+        print(f"\nSaved checkpoint: {filepath}")
+        
+        # Also log to wandb if available
+        if wandb.run is not None:
+            wandb.log({
+                "checkpoint_epoch": epoch + 1,
+                "checkpoint_path": filepath,
+            })
+
+
+def save_model(config, model, results, seed, checkpoint_dir):
+    """Save final model and artifacts."""
     if not config.get('save_model', True):
         return None
-    
-    # Create checkpoint directory
-    checkpoint_dir = Path(config.get('checkpoint_dir', './checkpoints'))
-    checkpoint_dir.mkdir(parents=True, exist_ok=True)
     
     # Generate model name
     now = datetime.now().strftime("%m-%d-%Y_%HH-%MM-%SS")
     model_prefix = config.get('model_name_prefix', 'pig_behavior_model')
-    model_name = f"{model_prefix}_{now}_seed{seed}_epoch{epoch}.h5"
-    model_path = checkpoint_dir / model_name
+    model_name = f"{model_prefix}_{now}_seed{seed}_final.h5"
+    model_path = os.path.join(checkpoint_dir, model_name)
     
     # Save model
     model.recognition_model.save(str(model_path))
-    print(f"\nModel saved to: {model_path}")
+    print(f"\nFinal model saved to: {model_path}")
     
     # Save training history
     if config.get('save_history', True) and hasattr(model, 'recognition_model_history'):
         if model.recognition_model_history:
             import pickle
             history_name = f"{model_prefix}_history_{now}.pkl"
-            history_path = checkpoint_dir / history_name
+            history_path = os.path.join(checkpoint_dir, history_name)
             with open(history_path, 'wb') as f:
                 pickle.dump(model.recognition_model_history.history, f)
             print(f"Training history saved to: {history_path}")
@@ -366,6 +420,7 @@ def save_model(config, model, results, seed, epoch):
                     'val_accuracy': results[0],
                     'val_f1': results[1],
                     'seed': seed,
+                    'checkpoint_dir': checkpoint_dir,
                 }
             )
             artifact.add_file(str(model_path))
@@ -381,17 +436,42 @@ def main(config_path):
     print(f"Loading config from: {config_path}")
     print(f"{'='*80}\n")
     
-    # Load configuration
+    # Load configuration FIRST
     config = load_config(config_path)
-    
-    # Setup seed
+    print("\n=== RAW CONFIG ===")
+    print(f"train_splits: '{config.get('train_splits')}' type={type(config.get('train_splits'))}")
+    print(f"val_splits: '{config.get('val_splits')}' type={type(config.get('val_splits'))}")
+    print(f"test_splits: '{config.get('test_splits')}' type={type(config.get('test_splits'))}")
+    print("==================\n")
+    # Setup seed IMMEDIATELY after config
     seed = setup_seed(config.get('seed'))
     
     # Setup GPU
     setup_gpu(config)
     
+    # Create checkpoint directory
+    now = datetime.now().strftime("%m-%d-%Y_%HH-%MM-%SS")
+    checkpoint_dir = os.path.join(
+        config.get('checkpoint_dir', './checkpoints'),
+        f"pig_behavior_{now}_seed{seed}"
+    )
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    print(f"\nCheckpoint directory: {checkpoint_dir}")
+    
+    # Add checkpoint_dir to config for logging
+    config['checkpoint_dir'] = checkpoint_dir
+    
     # Load data
     x_train, y_train, x_val, y_val, x_test, y_test = load_data(config)
+    
+    # Debug info (like working script)
+    print("\n=== DEBUG INFO ===")
+    print(f"Type of x_train: {type(x_train)}")
+    print(f"Length of x_train: {len(x_train)}")
+    if len(x_train) > 0:
+        print(f"Type of first element: {type(x_train[0])}")
+        print(f"First element value: {x_train[0][:100] if isinstance(x_train[0], str) else 'NOT A STRING'}")
+    print("==================\n")
     
     # Merge labels if specified
     y_train, y_val, y_test = merge_lying_classes(y_train, y_val, y_test, config)
@@ -400,7 +480,9 @@ def main(config_path):
     distributions = print_label_distributions(y_train, y_val, y_test)
     
     # Calculate class weights
-    class_weights_dict = calculate_class_weights(y_train, config)
+    class_weights_dict, label_encoder = None, None
+    if config.get('use_class_weights', False):
+        class_weights_dict, label_encoder = calculate_class_weights(y_train, config)
     
     # Initialize wandb
     initialize_wandb(config, seed, distributions, class_weights_dict)
@@ -423,6 +505,17 @@ def main(config_path):
             recurrent=False
         )
     
+    # Print config debug info (like working script)
+    print("\nConfig being used:")
+    for key in ['train_recognition_model', 'use_class_weights', 'recognition_model_use_scheduler']:
+        print(f"  {key}: {config[key]} (type: {type(config[key])})")
+    
+    # Create checkpoint callback
+    checkpoint_callback = PerEpochCheckpoint(
+        checkpoint_dir=checkpoint_dir,
+        class_names=dataloader.label_encoder.classes_ if hasattr(dataloader, 'label_encoder') else None
+    )
+    
     # Train model
     print("\n" + "="*80)
     print("TRAINING MODEL")
@@ -433,21 +526,23 @@ def main(config_path):
         config,
         num_classes=config['num_classes'],
         encode_labels=False,
-        class_weights=class_weights_dict
+        class_weights=class_weights_dict,
+        checkpoint_callback=checkpoint_callback
     )
     
     print("\n" + "="*80)
     print("TRAINING COMPLETE")
     print("="*80)
     print("\nValidation Results:")
+    print("Classification Report:")
     print(report)
     print(f"\nMetrics (acc, f1, corr): {results}")
     
     # Log results
     log_validation_results(config, model, dataloader, results, report, seed)
     
-    # Save model
-    model_path = save_model(config, model, results, seed, config['recognition_model_epochs'])
+    # Save final model
+    model_path = save_model(config, model, results, seed, checkpoint_dir)
     
     # Finish wandb
     if config.get('wandb_enabled', True):
@@ -455,10 +550,13 @@ def main(config_path):
         print("\nWandB run completed!")
     
     print(f"\n{'='*80}")
-    print(f"Training completed successfully!")
-    print(f"Seed: {seed}")
+    print(f"SUMMARY")
+    print(f"{'='*80}")
+    print(f"Checkpoint directory: {checkpoint_dir}")
     if model_path:
-        print(f"Model: {model_path}")
+        print(f"Final model: {model_path}")
+    print(f"Seed: {seed}")
+    print(f"All checkpoints saved in: {checkpoint_dir}")
     print(f"{'='*80}\n")
 
 
@@ -470,14 +568,14 @@ if __name__ == "__main__":
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python train_pig_behavior.py --config configs/behavior/default
-  python train_pig_behavior.py --config configs/behavior/p01_side_75
+  python train_model.py --config configs/behavior/default
+  python train_model.py --config configs/behavior/p01_side_75
         """
     )
     parser.add_argument(
         '--config',
         type=str,
-        default='configs/behavior/p01_side_75',
+        default='configs/behavior/default',
         help='Path to SIPEC config file (without extension)'
     )
     
